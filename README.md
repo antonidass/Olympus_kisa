@@ -1,60 +1,65 @@
-# Кисы Олимпа — пайплайн генерации
+# Кисы Олимпа — пайплайн генерации видео
 
-Автоматизация для канала «Кисы Олимпа»: от сценария мифа до набора картинок в Google ImageFX.
+Полный пайплайн создания коротких анимированных роликов по греческим мифам для канала «Кисы Олимпа»: сценарий → промпты → картинки → видео → озвучка → монтаж.
 
-## Структура
+## Структура проекта
 
 ```
 BOGI AI/
-├── CONTEXT.md              # Контекст проекта (правила сценариев, стиль)
-├── scripts/                # Markdown-файлы со сценами и промптами
-│   └── pandora.md
-├── automation/
-│   ├── imagefx_runner.py   # Playwright-раннер для Google ImageFX
-│   ├── requirements.txt
-│   └── .browser_profile/   # Сохранённая сессия браузера (создаётся автоматически)
-└── output/                 # Сгенерированные картинки
-    └── ящик_пандоры/
-        ├── scene_01.png
-        ├── scene_02.png
-        └── ...
+├── content/                         # Контент по роликам (один ролик = одна папка)
+│   └── икар_и_дедал/
+│       ├── prompts/                 # Промпты для генерации
+│       │   ├── images.md            #   картинки (ImageFX)
+│       │   ├── video.md             #   видео (LTX)
+│       │   └── voiceover.md         #   текст озвучки
+│       ├── voiceover/
+│       │   ├── texts/               # Тексты для TTS (.txt по сценам)
+│       │   └── audio/               # Сгенерированные mp3 (не в git)
+│       ├── images/                  # Сгенерированные картинки (не в git)
+│       ├── video/                   # Сгенерированные клипы (не в git)
+│       ├── music/                   # Фоновая музыка (не в git)
+│       └── final/                   # Готовый результат (не в git)
+├── automation/                      # Скрипты автоматизации
+│   ├── imagefx_runner.py            #   Playwright-раннер для Google ImageFX
+│   ├── video_runner.py              #   Генерация видео
+│   ├── dump_media.py                #   Дамп медиафайлов
+│   ├── inspect_flow.py              #   Инспекция пайплайна
+│   ├── qwen3_tts_voice_clone.py     #   TTS через Qwen3
+│   ├── setup_qwen3_tts_conda.ps1   #   Установка окружения для TTS
+│   └── requirements.txt
+├── remotion/                        # Remotion-проект (монтаж видео в React)
+│   └── src/
+│       ├── IcarusVideo.tsx           #   Главная композиция «Икар и Дедал»
+│       ├── Intro.tsx                 #   Заставка «Миф за минуту»
+│       ├── TextOverlay.tsx           #   Компонент текстовых субтитров
+│       └── transitions/              #   Кастомные переходы между сценами
+└── CONTEXT.md                       # Контекст проекта (правила, стиль, персонажи)
 ```
 
 ## Установка
 
 ```bash
+# Автоматизация (Python)
 cd "BOGI AI"
 pip install -r automation/requirements.txt
 python -m playwright install chromium
+
+# Remotion (Node.js)
+cd remotion
+npm install
 ```
 
-## Как это работает
+## Пайплайн создания ролика
 
-1. **Сценарий**: Claude в рамках сессии пишет сценарий мифа и разбивает его на сцены в файле `scripts/<миф>.md`.
-2. **Запуск раннера**:
-   ```bash
-   python automation/imagefx_runner.py scripts/pandora.md
-   ```
-3. **Первый запуск**: откроется окно Chromium с ImageFX — залогинься в Google. Сессия сохранится в `automation/.browser_profile`.
-4. **Генерация**: раннер по очереди вставляет промпт каждой сцены, ждёт генерации и сохраняет скриншот страницы в `output/<миф>/scene_NN.png`.
+1. **Сценарий** — пишется текст озвучки, разбивается на сцены (`content/<миф>/prompts/voiceover.md`)
+2. **Промпты картинок** — по каждой сцене генерируется промпт для ImageFX (`prompts/images.md`)
+3. **Промпты видео** — промпты для генерации видеоклипов через LTX (`prompts/video.md`)
+4. **Генерация ассетов** — картинки, видео, озвучка складываются в соответствующие папки
+5. **Монтаж** — Remotion собирает всё в финальное видео с субтитрами, музыкой и переходами
 
-## Формат markdown-файла со сценами
+## Правила контента
 
-```markdown
-# Название мифа
-
-## Сцена 1
-
-**Текст:** Закадровый текст на русском...
-
-**Промпт:** pixel art, cute cat as..., 16-bit retro game style, no text, no camera movement
-
-## Сцена 2
-...
-```
-
-Промпты пишутся на английском — ImageFX лучше их понимает. Стилистические константы: `pixel art`, `cute cat characters`, `16-bit retro game style`, `no text`, `no camera movement` (по правилам из `CONTEXT.md`).
-
-## Если что-то сломалось
-
-ImageFX может менять разметку — если раннер не находит поле ввода или кнопку генерации, поправь селекторы в функциях `wait_for_prompt_input()` и `click_generate()` в `automation/imagefx_runner.py`.
+- Персонажи — антропоморфные бипедальные коты (не люди, не реалистичные кошки)
+- Стиль — pixel art / 16-bit retro game style
+- Ударения в текстах только на именах собственных (Ика́р, Деда́л)
+- Видео-промпты обязательно содержат негатив: "No speech, no dialogue, no talking, no voices, no mouth movement, no music"
