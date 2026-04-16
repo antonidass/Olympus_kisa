@@ -1,0 +1,44 @@
+# Медиафайлы (генерируемые)
+content/*/voiceover/audio/
+content/*/images/
+content/*/video/
+content/*/music/
+content/*/final/
+
+# Ящик Пандоры — старый формат, всё тяжёлое
+content/ящик_пандоры/*.mp4
+content/ящик_пандоры/*.mp3
+content/ящик_пандоры/*.png
+content/ящик_пандоры/*.zip
+
+# Remotion
+remotion/node_modules/
+remotion/out/
+remotion/.remotion/
+remotion/public/audio/
+remotion/public/scenes/
+remotion/public/music/
+remotion/public/*.mp4
+
+# Браузерный профиль автоматизации
+automation/.browser_profile/
+
+# Временные файлы
+tmp_video_frames/
+mockups/
+external/
+__pycache__/
+*.pyc
+
+# Claude Code / инструменты
+.claude/
+.tools/
+.venvs/
+
+# Системные
+.DS_Store
+Thumbs.db
+
+# Папки не для репо
+кисы/
+конкуренты/
