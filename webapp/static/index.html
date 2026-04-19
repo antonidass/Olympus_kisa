@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Кисы Олимпа</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-view="chooser" data-mode="voice">
+
+<!-- TOP BAR -->
+<div class="topbar">
+  <div class="topbar-left">
+    <a class="brand" id="brand-link" href="#">Кисы Олимпа</a>
+    <div class="breadcrumb non-chooser-only">
+      <a class="crumb-link" id="crumb-hub" href="#">Ревью озвучки</a>
+      <span class="sep crumb-sep review-only">/</span>
+      <strong id="scenario-title" class="review-only">—</strong>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <!-- Hub: поиск -->
+    <div class="search hub-only">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="scenario-search" placeholder="поиск мифа…" autocomplete="off">
+    </div>
+    <!-- Review: прогресс -->
+    <div class="progress-pill review-only">
+      <div class="progress-ring">
+        <svg width="24" height="24" viewBox="0 0 24 24">
+          <circle class="track" cx="12" cy="12" r="10" />
+          <circle class="fill" cx="12" cy="12" r="10"
+                  stroke-dasharray="62.83" stroke-dashoffset="62.83" id="ring-fill" />
+        </svg>
+      </div>
+      <div class="progress-text"><b id="done-count">0</b> / <span id="total-count">0</span> проверено</div>
+    </div>
+  </div>
+</div>
+
+<!-- CONTENT WRAP -->
+<div class="content-wrap">
+
+  <!-- CHOOSER VIEW (выбор режима: озвучка / изображения) -->
+  <div class="chooser-container">
+    <div class="chooser-inner">
+      <div class="chooser-eyebrow">пиксель-арт шортсы по мифам Олимпа</div>
+      <h1 class="chooser-title">Что будем <em>проверять</em>?</h1>
+      <p class="chooser-sub">Выберите режим — озвучка сцен из ElevenLabs или изображения из ImageFX.</p>
+
+      <div class="chooser-grid">
+        <button class="chooser-card" data-mode="voice">
+          <div class="chooser-card-icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+          </div>
+          <div class="chooser-card-body">
+            <div class="chooser-card-label">режим 01</div>
+            <div class="chooser-card-title">Ревью озвучки</div>
+            <div class="chooser-card-desc">
+              Прослушать 3 варианта TTS на каждое предложение, выбрать лучший,
+              пометить непригодные на перегенерацию.
+            </div>
+            <div class="chooser-card-meta" id="chooser-voice-meta">загрузка…</div>
+          </div>
+          <div class="chooser-card-arrow">→</div>
+        </button>
+
+        <button class="chooser-card" data-mode="image">
+          <div class="chooser-card-icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/>
+              <path d="M21 15l-5-5L5 21"/>
+            </svg>
+          </div>
+          <div class="chooser-card-body">
+            <div class="chooser-card-label">режим 02</div>
+            <div class="chooser-card-title">Ревью изображений</div>
+            <div class="chooser-card-desc">
+              Посмотреть 3–4 варианта пиксель-арта на каждую сцену,
+              выбрать лучший кадр, пометить проблемные на перегенерацию.
+            </div>
+            <div class="chooser-card-meta" id="chooser-image-meta">загрузка…</div>
+          </div>
+          <div class="chooser-card-arrow">→</div>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- HUB VIEW (выбор сценария) -->
+  <div class="hub-container">
+    <aside class="hub-list-panel">
+      <div class="hub-list-header">
+        <div class="hub-list-title">Мифы</div>
+        <div class="hub-list-count" id="hub-count">—</div>
+      </div>
+      <div class="hub-list-filter">
+        <button class="hub-chip active" data-filter="all">все</button>
+        <button class="hub-chip" data-filter="in_progress">в работе</button>
+        <button class="hub-chip" data-filter="ready">готовы</button>
+        <button class="hub-chip" data-filter="new">новые</button>
+      </div>
+      <div class="hub-list-items" id="hub-list-items">
+        <div class="hub-list-loading">загрузка…</div>
+      </div>
+    </aside>
+
+    <main class="hub-detail-panel" id="hub-detail">
+      <div class="hub-empty">Выберите миф слева</div>
+    </main>
+  </div>
+
+  <!-- REVIEW VIEW (текущий интерфейс ревью) -->
+  <div class="review-container">
+    <nav class="sidebar" id="sidebar">
+      <div class="sidebar-title">Сцены</div>
+      <div id="scene-nav-list"></div>
+    </nav>
+
+    <div class="main-panel" id="main-panel">
+      <div class="empty-state" id="empty-state">
+        <div class="empty-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            <line x1="12" y1="19" x2="12" y2="23"/>
+            <line x1="8" y1="23" x2="16" y2="23"/>
+          </svg>
+        </div>
+        <div class="empty-text">Выберите сцену слева</div>
+      </div>
+
+      <div id="scene-detail" style="display:none"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- BOTTOM BAR (review-only) -->
+<div class="bottombar review-only">
+  <div class="bottom-stats">
+    <div class="bstat">
+      <div class="bstat-icon g"></div>
+      <span class="bstat-label">Выбрано</span>
+      <span class="bstat-num" id="stat-done">0</span>
+    </div>
+    <div class="bstat">
+      <div class="bstat-icon o"></div>
+      <span class="bstat-label">Ожидает</span>
+      <span class="bstat-num" id="stat-pending">0</span>
+    </div>
+    <div class="bstat">
+      <div class="bstat-icon r"></div>
+      <span class="bstat-label">Перегенерация</span>
+      <span class="bstat-num" id="stat-regen">0</span>
+    </div>
+  </div>
+  <div class="bottom-actions">
+    <button class="b-btn b-btn-primary" id="finalize-btn">
+      <span id="finalize-label">Собрать финал</span>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+    </button>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<!-- Modal -->
+<div class="modal-overlay" id="modal">
+  <div class="modal-dialog">
+    <div class="modal-header" id="modal-title"></div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-footer">
+      <button class="modal-btn modal-btn-ghost" id="modal-cancel">Отмена</button>
+      <button class="modal-btn modal-btn-primary" id="modal-confirm">OK</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

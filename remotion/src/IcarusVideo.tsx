@@ -13,7 +13,7 @@ import { fade } from "@remotion/transitions/fade";
 import { slide } from "@remotion/transitions/slide";
 import { Input, ALL_FORMATS, UrlSource } from "mediabunny";
 import { lightLeak, zoomIn, zoomOut } from "./transitions";
-import { IntroTextOverlay, SceneTextOverlay } from "./TextOverlay";
+import { EndingIris, IntroTextOverlay, SceneTextOverlay } from "./TextOverlay";
 
 // ─── Константы ───
 
@@ -266,7 +266,14 @@ export const IcarusVideo: React.FC<IcarusProps> = ({ scenes }) => {
                 <OffthreadVideo
                   src={staticFile(`scenes/${seg.clip.file}`)}
                   startFrom={startFromFrames}
-                  style={{ width: "100%", height: "105%", objectFit: "cover", objectPosition: "center 40%" }}
+                  style={{
+                    width: "100%",
+                    height: "105%",
+                    objectFit: "cover",
+                    objectPosition: "center 40%",
+                    transform: "scale(1.12)",
+                    transformOrigin: "center center",
+                  }}
                   volume={0.5}
                 />
               </AbsoluteFill>
@@ -330,6 +337,19 @@ export const IcarusVideo: React.FC<IcarusProps> = ({ scenes }) => {
           </Sequence>
         );
       })}
+
+      {/* ── Финальный iris-out («Конец») поверх последней сцены ── */}
+      {(() => {
+        const ENDING_IRIS_FRAMES = 60;
+        const last = scenePositions[scenePositions.length - 1];
+        const from = Math.max(last.from, last.from + last.duration - ENDING_IRIS_FRAMES);
+        const dur = last.from + last.duration - from;
+        return (
+          <Sequence from={from} durationInFrames={dur}>
+            <EndingIris durationInFrames={dur} cx={50} cy={32} />
+          </Sequence>
+        );
+      })()}
 
       {/* ── Звуки переходов (WHOOSH на slide-переходах между абзацами) ── */}
       {whooshPositions.map((frame, i) => (

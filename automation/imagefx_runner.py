@@ -12,8 +12,8 @@ Flow Runner — автоматизация генерации изображен
 
 Анти-детект:
     - Убран признак navigator.webdriver
-    - Человеческая скорость печати (50-120 мс/символ)
-    - Случайные паузы 30-60 сек между сценами
+    - Текст промпта вставляется через буфер обмена (Ctrl+V)
+    - Случайные паузы 10-20 сек между сценами
     - Случайные движения мыши
 
 Если Google всё равно блокирует:
@@ -34,6 +34,8 @@ from datetime import datetime
 from pathlib import Path
 
 from playwright.sync_api import Page, sync_playwright
+
+from flow_projects import resolve_flow_url
 
 # Переопределяем print так, чтобы каждое сообщение в консоли начиналось с [ЧЧ:ММ].
 # Многострочные сообщения получают префикс только на первой строке — остальные
@@ -56,9 +58,29 @@ def print(*args, **kwargs):  # type: ignore[override]
     kwargs.pop("sep", None)
     _original_print("\n".join(lines), **kwargs)
 
-FLOW_URL = "https://labs.google/fx/ru/tools/flow/project/7bd82873-3936-4fc2-8687-f4284b363c1f"
 PROFILE_DIR = Path(__file__).parent / ".browser_profile"
-OUTPUT_ROOT = Path(__file__).parent.parent / "output"
+CONTENT_ROOT = Path(__file__).parent.parent / "content"
+
+# Служебные/известные папки, которые точно не являются именем сценария
+_NON_SCENARIO_FOLDERS = {
+    "prompts", "video", "images", "voiceover", "music", "final",
+    "content", "automation", "scripts", "output",
+}
+
+
+def resolve_scenario_folder(markdown_path: Path) -> str:
+    """Имя папки сценария по пути к markdown-файлу (сохраняем оригинальный регистр).
+
+    Пример: scripts/икар_и_дедал/images.md → 'икар_и_дедал'.
+    """
+    for parent in markdown_path.resolve().parents:
+        name = parent.name
+        if not name:
+            continue
+        if name.lower() in _NON_SCENARIO_FOLDERS:
+            continue
+        return name
+    raise ValueError(f"Не удалось определить имя сценария из пути: {markdown_path}")
 
 PAGE_LOAD_TIMEOUT = 60_000
 GENERATION_TIMEOUT = 300  # сек — на всякий случай побольше
@@ -139,14 +161,34 @@ def human_sleep(min_s: float, max_s: float):
     time.sleep(random.uniform(min_s, max_s))
 
 
-def human_type(page: Page, text: str):
-    """Печать с человеческой скоростью и иногда с паузами между словами."""
-    for ch in text:
-        page.keyboard.type(ch)
-        if ch == " " and random.random() < 0.15:
-            time.sleep(random.uniform(0.15, 0.4))
-        else:
-            time.sleep(random.uniform(0.04, 0.12))
+def paste_text(page: Page, text: str):
+    """Мгновенная вставка текста в активный contenteditable —
+    имитация Ctrl+C/Ctrl+V через clipboard API страницы.
+
+    Используем navigator.clipboard.writeText(...) и отправляем Ctrl+V клавиатурой.
+    Для Chrome в persistent-контексте разрешения на clipboard обычно уже даны;
+    если нет — делаем fallback через execCommand('insertText').
+    """
+    try:
+        page.evaluate("(t) => navigator.clipboard.writeText(t)", text)
+        page.keyboard.press("Control+V")
+        return
+    except Exception:
+        pass
+    # Fallback: вставка через execCommand прямо в активный элемент
+    try:
+        page.evaluate(
+            """(t) => {
+                const el = document.activeElement;
+                if (el && (el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT')) {
+                    document.execCommand('insertText', false, t);
+                }
+            }""",
+            text,
+        )
+    except Exception:
+        # Последний fallback — Playwright insertText (моментальный, без посимвольных пауз)
+        page.keyboard.insert_text(text)
 
 
 def random_mouse_wander(page: Page):
@@ -168,7 +210,7 @@ def fill_prompt(page: Page, prompt: str):
     human_sleep(0.2, 0.4)
     page.keyboard.press("Delete")
     human_sleep(0.3, 0.6)
-    human_type(page, prompt)
+    paste_text(page, prompt)
     human_sleep(0.8, 1.5)
 
 
@@ -250,58 +292,100 @@ def generate_scene(page: Page, scene: Scene, output_dir: Path, captured: list[di
                 stable_since = None
         time.sleep(2)
 
+    # Доп. проход: Flow часто отдаёт через сеть только 1 полноразмерный вариант
+    # (тот, что в фокусе), а остальные 3 висят в DOM как превью <200px и не
+    # загружаются браузером, пока на них не кликнут. Достаём их URL из DOM
+    # (включая background-image) и подтягиваем через fetch() в контексте страницы.
+    supplement_from_dom(page, captured, state.get("existing_urls", set()))
+
     if not captured:
-        print("  ⚠ Сетевой перехват пуст. Пробую fallback через DOM...")
-        dom_imgs = fallback_dom_download(page, output_dir, scene.index, state.get("existing_urls", set()))
-        if not dom_imgs:
-            print("  ⚠ И DOM пустой. Сохраняю скриншот для диагностики.")
-            shot = output_dir / f"scene_{scene.index:02d}_fallback.png"
-            page.screenshot(path=str(shot), full_page=True)
-            print(f"  📸 Скриншот: {shot.name}")
+        print("  ⚠ И сеть, и DOM пусты. Сохраняю скриншот для диагностики.")
+        shot = output_dir / f"scene_{scene.index:02d}_fallback.png"
+        page.screenshot(path=str(shot), full_page=True)
+        print(f"  📸 Скриншот: {shot.name}")
         return
 
     print(f"  📥 Сохраняю {len(captured)} картинок...")
+    scene_dir = output_dir / f"scene_{scene.index:02d}"
+    scene_dir.mkdir(parents=True, exist_ok=True)
     for variant_i, item in enumerate(captured, start=1):
         ext = item["ext"]
-        out_path = output_dir / f"scene_{scene.index:02d}_v{variant_i}.{ext}"
+        out_path = scene_dir / f"v{variant_i}.{ext}"
         try:
             out_path.write_bytes(item["body"])
-            print(f"    ✓ {out_path.name}  ({len(item['body'])//1024} КБ)")
+            print(f"    ✓ {scene_dir.name}/{out_path.name}  ({len(item['body'])//1024} КБ)")
         except Exception as e:
-            print(f"    ✗ {out_path.name}: {e}")
+            print(f"    ✗ {scene_dir.name}/{out_path.name}: {e}")
 
 
-def fallback_dom_download(page: Page, output_dir: Path, scene_index: int, existing_urls: set[str]) -> int:
-    """Забирает новые большие <img> с страницы через fetch() внутри контекста страницы.
+def supplement_from_dom(page: Page, captured: list[dict], existing_urls: set[str]) -> None:
+    """Дотягивает варианты, которые Flow оставил лениво-загружаемыми.
 
-    Пропускает картинки, URL которых был в existing_urls до клика «Создать».
+    Сканирует:
+      1. Все <img> (без фильтра размера) с URL из IMAGE_URL_PATTERNS
+      2. background-image у всех элементов (Flow иногда рисует превью как bg)
+
+    URL, которых не было в DOM до клика «Создать» и которых ещё нет в captured,
+    тянет через fetch() внутри страницы и добавляет в captured.
     """
+    captured_urls = {item["url"] for item in captured}
+
     try:
-        srcs: list[str] = page.evaluate(
-            """() => {
+        dom_items = page.evaluate(
+            """(patterns) => {
+                const hit = (u) => u && patterns.some(p => u.includes(p));
                 const out = [];
+                // 1. <img> (любой размер)
                 document.querySelectorAll('img').forEach(el => {
+                    if (!hit(el.src)) return;
                     const r = el.getBoundingClientRect();
-                    if (r.width < 200 || r.height < 200) return;
-                    if (!el.src) return;
-                    out.push(el.src);
+                    out.push({src: el.src, w: Math.round(r.width), h: Math.round(r.height), kind: 'img'});
+                });
+                // 2. background-image у всех элементов
+                document.querySelectorAll('*').forEach(el => {
+                    const bg = getComputedStyle(el).backgroundImage;
+                    if (!bg || bg === 'none') return;
+                    const m = bg.match(/url\\((?:"|')?([^"')]+)(?:"|')?\\)/);
+                    if (!m) return;
+                    const url = m[1];
+                    if (!hit(url)) return;
+                    const r = el.getBoundingClientRect();
+                    out.push({src: url, w: Math.round(r.width), h: Math.round(r.height), kind: 'bg'});
                 });
                 return out;
-            }"""
+            }""",
+            IMAGE_URL_PATTERNS,
         )
     except Exception as e:
-        print(f"    ! fallback DOM eval ошибка: {e}")
-        return 0
+        print(f"    ! supplement DOM eval ошибка: {e}")
+        return
 
-    new_srcs = [s for s in srcs if s not in existing_urls]
-    print(f"    📋 DOM: всего {len(srcs)} img, новых (не было до клика) {len(new_srcs)}")
+    # Дедуп по src
+    seen: set[str] = set()
+    uniq: list[dict] = []
+    for item in dom_items:
+        if item["src"] in seen:
+            continue
+        seen.add(item["src"])
+        uniq.append(item)
 
-    saved = 0
-    for i, src in enumerate(new_srcs, start=1):
+    candidates = [
+        it for it in uniq
+        if it["src"] not in existing_urls and it["src"] not in captured_urls
+    ]
+    if not candidates:
+        return
+
+    print(f"    🔁 В DOM {len(candidates)} URL мимо сети:")
+    for it in candidates:
+        print(f"       {it['kind']} {it['w']}x{it['h']}  {it['src'][:80]}")
+
+    for it in candidates:
+        src = it["src"]
         try:
             data = page.evaluate(
                 """async (url) => {
-                    const r = await fetch(url);
+                    const r = await fetch(url, {credentials: 'include'});
                     if (!r.ok) throw new Error('HTTP ' + r.status);
                     const buf = await r.arrayBuffer();
                     return Array.from(new Uint8Array(buf));
@@ -310,15 +394,23 @@ def fallback_dom_download(page: Page, output_dir: Path, scene_index: int, existi
             )
             body = bytes(data)
             if len(body) < MIN_IMAGE_BYTES:
-                print(f"    ~ пропущен ({len(body)//1024}КБ, плейсхолдер?) {src[:60]}")
+                print(f"    ~ dom-fetch пропущен ({len(body)//1024}КБ плейсхолдер) {src[:60]}")
                 continue
-            out_path = output_dir / f"scene_{scene_index:02d}_dom_v{i}.png"
-            out_path.write_bytes(body)
-            print(f"    ✓ (DOM) {out_path.name}  ({len(body)//1024} КБ)")
-            saved += 1
+            # Определяем тип по сигнатуре файла
+            if body[:3] == b"\xff\xd8\xff":
+                ext = "jpg"
+            elif body[:8] == b"\x89PNG\r\n\x1a\n":
+                ext = "png"
+            elif body[:6] in (b"GIF87a", b"GIF89a"):
+                ext = "gif"
+            elif body[:4] == b"RIFF" and body[8:12] == b"WEBP":
+                ext = "webp"
+            else:
+                ext = "jpg"
+            captured.append({"url": src, "ct": f"image/{ext}", "ext": ext, "body": body})
+            print(f"    ✓ dom-fetch {len(body)//1024}КБ → v{len(captured)}  {src[:60]}")
         except Exception as e:
-            print(f"    ✗ fallback fetch {src[:60]}: {e}")
-    return saved
+            print(f"    ✗ dom-fetch {src[:60]}: {e}")
 
 
 def run(markdown_path: Path, scenes_filter: set[int] | None, start_from: int, headless: bool = False):
@@ -332,8 +424,14 @@ def run(markdown_path: Path, scenes_filter: set[int] | None, start_from: int, he
     print(f"📖 Миф: {title}")
     print(f"📑 Будет обработано сцен: {len(scenes)} (номера: {[s.index for s in scenes]})")
 
-    output_dir = OUTPUT_ROOT / slugify(title)
+    # Резолвим Flow-проект ДО запуска браузера: если сценарий новый,
+    # пользователя спросят flow_id сразу, без лишнего запуска Chromium.
+    flow_url = resolve_flow_url(markdown_path)
+
+    scenario_folder = resolve_scenario_folder(markdown_path)
+    output_dir = CONTENT_ROOT / scenario_folder / "images" / "review_images"
     output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"📂 Картинки будут сохраняться в: {output_dir}")
 
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -343,8 +441,12 @@ def run(markdown_path: Path, scenes_filter: set[int] | None, start_from: int, he
     state: dict = {"accepting": False, "existing_urls": set()}
 
     with sync_playwright() as p:
+        # channel="chrome" — используем установленный Google Chrome вместо
+        # Playwright-Chromium "для тестирования". Общий persistent-профиль
+        # хранит Google-авторизацию и может падать/ломаться в тестовой сборке.
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(PROFILE_DIR),
+            channel="chrome",
             headless=headless,
             viewport={"width": 1400, "height": 900},
             locale="ru-RU",
@@ -355,6 +457,13 @@ def run(markdown_path: Path, scenes_filter: set[int] | None, start_from: int, he
             ],
         )
         context.add_init_script(STEALTH_INIT_SCRIPT)
+        try:
+            context.grant_permissions(
+                ["clipboard-read", "clipboard-write"],
+                origin="https://labs.google",
+            )
+        except Exception as e:
+            print(f"⚠ Не удалось выдать clipboard-разрешения: {e}")
 
         page = context.pages[0] if context.pages else context.new_page()
 
@@ -397,7 +506,7 @@ def run(markdown_path: Path, scenes_filter: set[int] | None, start_from: int, he
         page.on("response", on_response)
 
         print("\n🌐 Открываю Flow-проект")
-        page.goto(FLOW_URL, timeout=PAGE_LOAD_TIMEOUT, wait_until="domcontentloaded")
+        page.goto(flow_url, timeout=PAGE_LOAD_TIMEOUT, wait_until="domcontentloaded")
 
         print("\n⏸  Дождись полной загрузки проекта (поле ввода должно быть видно).")
         print("   Если недавно была ошибка 'unusual activity' — подожди 15-30 мин перед запуском.")
@@ -411,9 +520,9 @@ def run(markdown_path: Path, scenes_filter: set[int] | None, start_from: int, he
             finally:
                 state["accepting"] = False
 
-            # Длинная пауза между сценами кроме последней
+            # Пауза между сценами кроме последней
             if i < len(scenes) - 1:
-                pause = random.uniform(30, 60)
+                pause = random.uniform(10, 20)
                 print(f"  💤 Пауза {int(pause)} сек перед следующей сценой...")
                 time.sleep(pause)
                 random_mouse_wander(page)

@@ -5,7 +5,7 @@
   "scripts": {
     "studio": "remotion studio src/index.ts",
     "render": "remotion render src/index.ts Intro out/intro.mp4",
-    "render:icarus": "remotion render src/index.ts IcarusAndDaedalus out/icarus_and_daedalus.mp4",
+    "render:icarus": "remotion render src/index.ts IcarusAndDaedalus \"../content/икар_и_дедал/final/Икар и Дедал.mp4\"",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

@@ -31,6 +31,8 @@ from pathlib import Path
 
 from playwright.sync_api import Page, sync_playwright
 
+from flow_projects import resolve_flow_url
+
 _original_print = builtins.print
 
 
@@ -51,19 +53,60 @@ def print(*args, **kwargs):  # type: ignore[override]
 
 
 # ──────────────────────────────────────────────────────────────────
-# Flow-проекты: имя_сценария → flow_id
-# Перед запуском нового проекта — добавь строку с его flow_id.
-# flow_id берётся из URL: labs.google/fx/.../flow/project/<flow_id>
+# Маппинг «сценарий → flow_id» хранится в automation/flow_projects.json.
+# При первом запуске для нового сценария resolve_flow_url() сам спросит
+# flow_id и сохранит его в JSON.
 # ──────────────────────────────────────────────────────────────────
-FLOW_PROJECTS: dict[str, str] = {
-    "икар_и_дедал": "7bd82873-3936-4fc2-8687-f4284b363c1f",
-    # "новый_сценарий": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-}
 
-FLOW_BASE_URL = "https://labs.google/fx/ru/tools/flow/project"
 PROFILE_DIR = Path(__file__).parent / ".browser_profile"
 PROJECT_ROOT = Path(__file__).parent.parent
-OUTPUT_ROOT = PROJECT_ROOT / "output"
+CONTENT_ROOT = PROJECT_ROOT / "content"
+
+# Папки, которые не могут быть именем сценария (служебные)
+_NON_SCENARIO_FOLDERS = {
+    "prompts", "video", "images", "voiceover", "music", "final",
+    "content", "automation", "scripts", "output",
+}
+
+
+def resolve_scenario_folder(markdown_path: Path) -> str:
+    """Имя папки сценария по пути к markdown-файлу.
+
+    Пример: content/Сизифов Труд/prompts/video.md → 'Сизифов Труд'.
+    """
+    for parent in markdown_path.resolve().parents:
+        name = parent.name
+        if not name:
+            continue
+        if name.lower() in _NON_SCENARIO_FOLDERS:
+            continue
+        return name
+    raise ValueError(f"Не удалось определить имя сценария из пути: {markdown_path}")
+
+
+APPROVED_IMG_RE = re.compile(r"^scene_(\d+)_(v\d+)$")
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def load_approved_images_map(scenario_folder: str) -> dict[int, Path]:
+    """Читает content/<миф>/images/approved_images/ и возвращает {scene_index: Path}.
+
+    Позволяет узнать, какой именно вариант (v1/v2/v3/v4) пользователь отобрал
+    для конкретной сцены после финализации. Нужно чтобы в Flow-пикере выбрать
+    именно тот же кадр визуально — через pHash сравнение с thumbnail'ами.
+    """
+    approved_dir = CONTENT_ROOT / scenario_folder / "images" / "approved_images"
+    if not approved_dir.exists():
+        return {}
+    result: dict[int, Path] = {}
+    for img in approved_dir.iterdir():
+        if img.suffix.lower() not in _IMAGE_EXTS:
+            continue
+        m = APPROVED_IMG_RE.match(img.stem)
+        if not m:
+            continue
+        result[int(m.group(1))] = img
+    return result
 
 PAGE_LOAD_TIMEOUT = 60_000
 
@@ -152,17 +195,140 @@ def human_type(page: Page, text: str):
             time.sleep(random.uniform(0.04, 0.12))
 
 
-def random_mouse_wander(page: Page):
-    for _ in range(random.randint(2, 4)):
+def random_mouse_wander(page: Page, intensity: str = "normal"):
+    """Имитирует праздное движение мыши.
+
+    intensity:
+      'light'  — 1-2 движения, короткие паузы (быстрый жест между кликами)
+      'normal' — 2-4 движения (по умолчанию)
+      'heavy'  — 4-8 движений с долгими паузами (во время «чтения» или ожидания)
+    """
+    if intensity == "light":
+        moves = random.randint(1, 2)
+        pause = (0.08, 0.22)
+    elif intensity == "heavy":
+        moves = random.randint(4, 8)
+        pause = (0.4, 1.1)
+    else:
+        moves = random.randint(2, 4)
+        pause = (0.15, 0.45)
+    for _ in range(moves):
         x = random.randint(200, 1200)
         y = random.randint(200, 700)
-        page.mouse.move(x, y, steps=random.randint(8, 20))
-        time.sleep(random.uniform(0.1, 0.3))
+        page.mouse.move(x, y, steps=random.randint(15, 35))
+        time.sleep(random.uniform(*pause))
+
+
+def idle_like_human(page: Page, seconds: float):
+    """Ждёт `seconds` секунд, периодически шевеля мышью — как человек
+    смотрит в экран и иногда двигает курсор.
+    """
+    elapsed = 0.0
+    while elapsed < seconds:
+        chunk = random.uniform(3.5, 9.0)
+        if elapsed + chunk > seconds:
+            chunk = seconds - elapsed
+        time.sleep(chunk)
+        elapsed += chunk
+        # 60% шанс что-то подвинуть, 40% просто сидеть
+        if random.random() < 0.6 and elapsed < seconds - 0.5:
+            random_mouse_wander(page, intensity=random.choice(["light", "normal"]))
+            # random_mouse_wander сам потратил ~0.5-2 сек — учитываем
+            elapsed += random.uniform(0.5, 1.5)
 
 
 GALLERY_IMG_SELECTOR = 'img[alt="Сгенерированное изображение"]'
 # Слот «Первый кадр» — div 50x50 cursor:pointer в видео-панели
 FIRST_FRAME_SLOT_TEXT = "Первый кадр"
+
+
+# ── Обнаружение блокировки Flow («подозрительная активность») ──────────────
+
+def detect_abuse_dialog(page: Page) -> bool:
+    """Ищет в DOM признаки предупреждения «We noticed some unusual activity»."""
+    try:
+        return bool(page.evaluate(
+            """
+            () => {
+                const text = (document.body.innerText || '').toLowerCase();
+                return text.includes('unusual activity')
+                    || text.includes('подозрительн')
+                    || text.includes('помощи') && text.includes('help center')
+                    || text.includes('we noticed some');
+            }
+            """
+        ))
+    except Exception:
+        return False
+
+
+def pause_for_abuse_resolution(context: str = ""):
+    """Останавливает скрипт, ждёт пока пользователь разблокирует Flow вручную."""
+    print("\n" + "🚨" * 30)
+    print(f"  Flow показал «подозрительная активность»{' (' + context + ')' if context else ''}.")
+    print("  1) В окне браузера — кликни на предупреждение, пройди все шаги")
+    print("     (restore, continue, или подожди несколько минут).")
+    print("  2) Когда Flow снова работает — нажми Enter здесь для продолжения.")
+    print("🚨" * 30)
+    input("\n     Жду разблокировки → Enter... ")
+    # Дать странице стабилизироваться после разблокировки
+    time.sleep(random.uniform(2, 4))
+
+
+# ── Perceptual hash (pHash) для автовыбора картинки из пикера ───────────────
+#
+# Flow-пикер показывает thumbnail'ы и превью описаний, но без привязки к тому,
+# какой именно scene_XX_vN.jpg мы выбрали при финализации — UUID во Flow не
+# совпадают с именами файлов в approved_images/. Поэтому сопоставляем визуально:
+# считаем pHash каждого thumbnail и сравниваем с pHash approved-картинки.
+#
+# Метод: grayscale + resize 8×8 → bit per pixel относительно среднего.
+# Это устойчиво к разнице разрешений (thumbnail vs original) и небольшому
+# шуму от JPEG-сжатия.
+
+def phash_bytes(data: bytes, size: int = 8) -> int:
+    """Перцептуальный хэш картинки (64 бита для size=8)."""
+    from PIL import Image
+    from io import BytesIO
+    img = Image.open(BytesIO(data)).convert("L").resize((size, size), Image.LANCZOS)
+    pixels = list(img.getdata())
+    avg = sum(pixels) / len(pixels)
+    h = 0
+    for p in pixels:
+        h = (h << 1) | (1 if p > avg else 0)
+    return h
+
+
+def hamming_distance(h1: int, h2: int) -> int:
+    """Число отличающихся бит между двумя хэшами."""
+    return bin(h1 ^ h2).count("1")
+
+
+def fetch_image_bytes(page: Page, url: str) -> bytes:
+    """Загружает картинку по URL через fetch() внутри страницы → bytes.
+
+    Делается из контекста Flow (same-origin), поэтому работает с приватными
+    thumbnail'ами, которые напрямую Playwright не скачает.
+    """
+    import base64
+    data_url = page.evaluate(
+        """
+        async (url) => {
+            const r = await fetch(url);
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const blob = await r.blob();
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
+        }
+        """,
+        url,
+    )
+    _, b64 = data_url.split(",", 1)
+    return base64.b64decode(b64)
 
 
 def click_first_frame_slot(page: Page) -> bool:
@@ -202,11 +368,33 @@ def click_first_frame_slot(page: Page) -> bool:
 
 
 def get_gallery_image_urls(page: Page) -> list[str]:
-    """Собирает URL всех изображений из главной галереи (до открытия пикера)."""
-    return page.evaluate("""
-        () => Array.from(document.querySelectorAll('img[alt="Сгенерированное изображение"]'))
-            .map(img => img.src)
-    """)
+    """Собирает URL всех изображений из главной галереи (до открытия пикера).
+
+    С retry: Flow — SPA, может делать навигацию прямо во время evaluate
+    (особенно при первом запуске сцены — страница ещё дорендеривается).
+    """
+    last_err = None
+    for attempt in range(5):
+        try:
+            # Ждём пока DOM стабилизируется — необязательно до networkidle,
+            # достаточно "domcontentloaded" плюс небольшая пауза
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=5_000)
+            except Exception:
+                pass
+            return page.evaluate("""
+                () => Array.from(document.querySelectorAll('img[alt="Сгенерированное изображение"]'))
+                    .map(img => img.src)
+            """)
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            if "Execution context was destroyed" in msg or "navigation" in msg.lower():
+                print(f"  ⚠ Страница ещё навигирует, жду 3 сек (попытка {attempt + 1}/5)...")
+                time.sleep(3)
+                continue
+            raise
+    raise last_err if last_err else RuntimeError("get_gallery_image_urls failed")
 
 
 def extract_media_id(url: str) -> str:
@@ -338,18 +526,212 @@ def select_from_picker(page: Page, target_media_id: str) -> bool:
     return False
 
 
+def _list_picker_rows(page: Page) -> list[dict]:
+    """Возвращает видимые ряды пикера с координатами и URL миниатюр."""
+    return page.evaluate(
+        """
+        () => {
+            const dialog = document.querySelector('div[role="dialog"]');
+            if (!dialog) return [];
+            const out = [];
+            dialog.querySelectorAll('div').forEach(el => {
+                const rect = el.getBoundingClientRect();
+                if (rect.width > 200 && rect.width < 350
+                    && rect.height > 40 && rect.height < 70
+                    && el.querySelector('img')
+                    && window.getComputedStyle(el).cursor === 'pointer') {
+                    const img = el.querySelector('img');
+                    out.push({
+                        src: img.src,
+                        x: rect.x + rect.width / 2,
+                        y: rect.y + rect.height / 2,
+                    });
+                }
+            });
+            return out;
+        }
+        """
+    )
+
+
+# Порог совпадения pHash. Типичные значения:
+#   distance 0-5    — почти точное совпадение (считаем "нашёл")
+#   distance 5-12   — похожее изображение
+#   distance 12-20  — сомнительно, но ещё можно
+#   distance 20+    — разные картинки
+PHASH_MATCH_THRESHOLD = 14
+
+
+def select_from_picker_by_image(page: Page, approved_path: Path) -> bool:
+    """Находит в открытом пикере картинку, визуально совпадающую с approved_path.
+
+    Алгоритм:
+      1. Считаем pHash approved-кадра
+      2. Скроллим пикер сверху вниз, на каждом шаге хэшируем новые thumbnail'ы
+      3. Находим ряд с минимальной hamming distance
+      4. Если ниже порога — кликаем, иначе возвращаем False (ручной fallback)
+    """
+    try:
+        page.locator('div[role="dialog"]').wait_for(state="visible", timeout=5_000)
+    except Exception:
+        print("  ⚠ Диалог пикера не появился")
+        return False
+
+    target_hash = phash_bytes(approved_path.read_bytes())
+    print(f"  🔢 pHash approved: {target_hash:016x}")
+
+    human_sleep(0.4, 0.7)
+    # Скроллим в начало списка
+    for _ in range(3):
+        _scroll_picker(page, "up")
+    human_sleep(0.3, 0.5)
+
+    best = {"distance": 999, "src": None, "x": 0, "y": 0}
+    seen_srcs: set[str] = set()
+    max_scrolls = 50
+
+    for scroll_i in range(max_scrolls):
+        rows = _list_picker_rows(page)
+        new_in_batch = 0
+        for row in rows:
+            src = row.get("src")
+            if not src or src in seen_srcs:
+                continue
+            seen_srcs.add(src)
+            new_in_batch += 1
+            try:
+                thumb_bytes = fetch_image_bytes(page, src)
+                row_hash = phash_bytes(thumb_bytes)
+                d = hamming_distance(row_hash, target_hash)
+                if d < best["distance"]:
+                    best = {"distance": d, "src": src, "x": row["x"], "y": row["y"]}
+                    if d <= 2:
+                        # Очень уверенное совпадение — можно не продолжать
+                        print(f"  ⚡ Почти идеальное совпадение (distance={d}), остановка")
+                        break
+            except Exception as e:
+                # Thumbnail мог ещё грузиться — пропускаем
+                continue
+
+        if best["distance"] <= 2:
+            break
+
+        if new_in_batch == 0:
+            # Ничего нового не появилось — скорее всего, достигли конца
+            break
+
+        scrolled = _scroll_picker(page, "down")
+        if not scrolled:
+            break
+        time.sleep(0.35)
+
+    print(f"  📏 Лучшее совпадение: distance={best['distance']}, "
+          f"просканировано {len(seen_srcs)} картинок")
+
+    if best["distance"] > PHASH_MATCH_THRESHOLD:
+        print(f"  ⚠ Слабое совпадение (>{PHASH_MATCH_THRESHOLD}) — выбор ненадёжен")
+        return False
+
+    # Прокручиваем к найденному ряду и кликаем
+    clicked = page.evaluate(
+        """
+        (src) => {
+            const dialog = document.querySelector('div[role="dialog"]');
+            if (!dialog) return false;
+            const rows = Array.from(dialog.querySelectorAll('div'));
+            for (const el of rows) {
+                const rect = el.getBoundingClientRect();
+                if (rect.width > 200 && rect.width < 350
+                    && rect.height > 40 && rect.height < 70
+                    && el.querySelector('img')
+                    && window.getComputedStyle(el).cursor === 'pointer') {
+                    const img = el.querySelector('img');
+                    if (img && img.src === src) {
+                        el.scrollIntoView({block: 'center'});
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+        """,
+        best["src"],
+    )
+    if not clicked:
+        print("  ⚠ Ряд с лучшим совпадением исчез после скролла")
+        return False
+
+    time.sleep(0.4)
+    # Перечитываем координаты после scrollIntoView
+    rows = _list_picker_rows(page)
+    for row in rows:
+        if row.get("src") == best["src"]:
+            page.mouse.click(row["x"], row["y"])
+            human_sleep(1.2, 1.8)
+            print(f"  ✓ Автовыбор по pHash (distance={best['distance']})")
+            return True
+
+    # Fallback — клик по последним известным координатам
+    page.mouse.click(best["x"], best["y"])
+    human_sleep(1.2, 1.8)
+    print(f"  ✓ Автовыбор по pHash (distance={best['distance']}, исходные координаты)")
+    return True
+
+
 def fill_prompt(page: Page, prompt: str):
+    """Печатает промпт посимвольно как человек.
+
+    Paste через буфер — один из сильных bot-сигналов Google. Поэтому печатаем
+    буквами с вариативным темпом, с редкими паузами «на подумать» на знаках
+    препинания. Для ~400 символов это займёт 30-60 сек — как раз нормальная
+    скорость печати.
+    """
     field = page.locator(PROMPT_SELECTOR).first
     field.wait_for(state="visible", timeout=10_000)
-    random_mouse_wander(page)
+
+    random_mouse_wander(page, intensity="light")
     field.click()
-    human_sleep(0.5, 1.2)
+    time.sleep(random.uniform(0.6, 1.3))
+
     page.keyboard.press("Control+A")
-    human_sleep(0.2, 0.4)
+    time.sleep(random.uniform(0.25, 0.5))
     page.keyboard.press("Delete")
-    human_sleep(0.3, 0.6)
-    human_type(page, prompt)
-    human_sleep(0.8, 1.5)
+    time.sleep(random.uniform(0.4, 0.8))
+
+    print(f"  ⌨  Печатаю промпт ({len(prompt)} симв.)...")
+    human_type_prompt(page, prompt)
+
+    # Короткая пауза после печати — «ещё раз взглянул перед отправкой»
+    time.sleep(random.uniform(1.5, 3.5))
+
+
+def human_type_prompt(page: Page, text: str):
+    """Посимвольная печать с человеческим ритмом.
+
+    Базовая скорость 0.04-0.11 сек/символ (≈ 90-180 симв/мин, комфортный темп).
+    После знаков препинания — микро-пауза. Изредка (5%) «задумываемся» на
+    0.5-2 сек, имитируя паузу перед трудным словом.
+    """
+    for i, ch in enumerate(text):
+        page.keyboard.type(ch)
+
+        # Редкая долгая пауза — как будто задумались
+        if random.random() < 0.03 and i > 20:
+            time.sleep(random.uniform(0.5, 2.0))
+            continue
+
+        # Пауза после знака препинания
+        if ch in ".,;!?" and random.random() < 0.7:
+            time.sleep(random.uniform(0.15, 0.5))
+            continue
+
+        # Пауза после пробела (конец слова) — иногда
+        if ch == " " and random.random() < 0.18:
+            time.sleep(random.uniform(0.12, 0.35))
+            continue
+
+        # Обычный ритм печати
+        time.sleep(random.uniform(0.04, 0.11))
 
 
 def click_generate(page: Page):
@@ -359,7 +741,10 @@ def click_generate(page: Page):
         if btn.is_enabled():
             break
         time.sleep(0.3)
-    random_mouse_wander(page)
+    # Более естественный заход на кнопку: пара движений, небольшая пауза
+    # (как будто пользователь ещё раз взглянул на промпт), потом клик.
+    random_mouse_wander(page, intensity="normal")
+    time.sleep(random.uniform(0.6, 1.4))
     btn.click()
 
 
@@ -417,37 +802,105 @@ def open_generated_video(page: Page) -> bool:
     return False
 
 
-def download_video_via_ui(page: Page, output_dir: Path, scene_index: int) -> bool:
-    """Скачивает видео из открытого превью: Скачать → 1080p."""
+DOWNLOAD_TIMEOUT_MS = 240_000  # 4 минуты — 1080p видео могут быть 30+ МБ
 
-    # Кликаем «Скачать»
+
+def _do_download_flow(page: Page, output_dir: Path, scene_index: int,
+                      attempt_label: str = "") -> bool:
+    """Однократная попытка скачать текущее видео через UI: Скачать → 1080p.
+
+    Ключевые моменты:
+    - ждём что меню качеств ДЕЙСТВИТЕЛЬНО появилось после клика «Скачать»
+    - таймаут скачивания 4 мин (большие 1080p видео качаются не мгновенно)
+    - перед кликом на 1080p убеждаемся что элемент видим и enabled
+    """
+    label = f" [{attempt_label}]" if attempt_label else ""
+
     dl_btn = page.locator('button:has-text("Скачать")')
     try:
         dl_btn.first.wait_for(state="visible", timeout=5_000)
         dl_btn.first.click()
-        human_sleep(0.5, 1.0)
-        print("  ↳ Кликнул «Скачать»")
+        human_sleep(0.8, 1.5)
+        print(f"  ↳ Кликнул «Скачать»{label}")
     except Exception as e:
         print(f"  ⚠ Кнопка «Скачать» не найдена: {e}")
         return False
 
-    # Кликаем «1080p» и ловим скачивание
+    # Ждём, пока реально появится элемент «1080p» (меню качеств открылось).
+    # Если меню не развернулось — клик на текст «1080p» уйдёт в никуда.
+    q_btn = page.get_by_text("1080p")
     try:
-        with page.expect_download(timeout=120_000) as download_info:
-            q_btn = page.get_by_text("1080p")
-            q_btn.first.wait_for(state="visible", timeout=5_000)
+        q_btn.first.wait_for(state="visible", timeout=10_000)
+    except Exception:
+        print(f"  ⚠ Меню качеств не появилось — ещё раз жмём «Скачать»")
+        try:
+            dl_btn.first.click()
+            human_sleep(0.8, 1.5)
+            q_btn.first.wait_for(state="visible", timeout=10_000)
+        except Exception as e:
+            print(f"  ⚠ Меню всё равно не открылось: {e}")
+            return False
+
+    # Ловим скачивание
+    try:
+        with page.expect_download(timeout=DOWNLOAD_TIMEOUT_MS) as download_info:
             q_btn.first.click()
-            print("  ↳ Кликнул «1080p», жду скачивания...")
+            print(f"  ↳ Кликнул «1080p», жду скачивания (до {DOWNLOAD_TIMEOUT_MS // 60_000} мин)...")
 
         download = download_info.value
         out_path = output_dir / f"scene_{scene_index:02d}_v1.mp4"
         download.save_as(str(out_path))
         size_mb = out_path.stat().st_size / (1024 * 1024)
-        print(f"  ✓ Скачано: {out_path.name} ({size_mb:.1f} МБ)")
+        print(f"  ✓ Скачано{label}: {out_path.name} ({size_mb:.1f} МБ)")
         return True
     except Exception as e:
-        print(f"  ⚠ Ошибка скачивания: {e}")
+        print(f"  ⚠ Ошибка скачивания{label}: {e}")
         return False
+
+
+def download_video_via_ui(page: Page, output_dir: Path, scene_index: int) -> bool:
+    """Скачивает видео из открытого превью с retry и обнаружением блокировок."""
+
+    # Первая попытка
+    if _do_download_flow(page, output_dir, scene_index):
+        return True
+
+    # Диагностика: что видно на экране после таймаута?
+    try:
+        visible_buttons = page.evaluate(
+            """
+            () => {
+                const out = [];
+                document.querySelectorAll('button').forEach(b => {
+                    if (b.offsetWidth > 0 && b.offsetHeight > 0) {
+                        const t = (b.innerText || '').trim();
+                        if (t && t.length < 40) out.push(t);
+                    }
+                });
+                return out.slice(0, 20);
+            }
+            """
+        )
+        print(f"  🔍 Видимые кнопки на странице: {visible_buttons}")
+    except Exception:
+        pass
+
+    # Проверяем abuse-диалог
+    if detect_abuse_dialog(page):
+        pause_for_abuse_resolution(context=f"при скачивании сцены {scene_index}")
+        time.sleep(random.uniform(1.5, 3.0))
+        # Повтор после разблокировки
+        if _do_download_flow(page, output_dir, scene_index, attempt_label="после разблокировки"):
+            return True
+
+    # Ещё одна попытка — иногда после таймаута меню просто закрылось,
+    # и достаточно ещё раз пройти весь флоу.
+    print("  🔄 Ещё одна попытка...")
+    time.sleep(random.uniform(2, 4))
+    if _do_download_flow(page, output_dir, scene_index, attempt_label="retry"):
+        return True
+
+    return False
 
 
 def count_video_items(page: Page) -> int:
@@ -549,16 +1002,26 @@ def go_back_to_gallery(page: Page):
 
 
 def generate_video_scene(page: Page, scene: VideoScene, output_dir: Path,
+                         approved_map: dict[int, Path],
                          first_scene: bool = False):
     full_prompt = build_full_prompt(scene)
 
+    approved_path = approved_map.get(scene.index)
+    approved_name = approved_path.name if approved_path else None
+
     print(f"\n{'='*60}")
     print(f"→ Сцена {scene.index}")
+    if approved_name:
+        print(f"  ★ Выбранный кадр: {approved_name}")
     print(f"  Картинка: {scene.image_path}")
     print(f"  Промпт: {scene.prompt[:80]}...")
     if scene.sounds:
         print(f"  Звуки: {scene.sounds[:80]}...")
     print(f"{'='*60}")
+
+    # Превентивная проверка: не висит ли abuse-диалог от прошлых шагов?
+    if detect_abuse_dialog(page):
+        pause_for_abuse_resolution(context=f"перед сценой {scene.index}")
 
     # ШАГ 1: собираем URL изображений из галереи (до открытия пикера)
     gallery_urls = get_gallery_image_urls(page)
@@ -568,6 +1031,19 @@ def generate_video_scene(page: Page, scene: VideoScene, output_dir: Path,
     if total_images == 0:
         print("  ⚠ Галерея пуста — выбери изображение вручную.")
         input("     Нажми Enter когда готово... ")
+    elif approved_path:
+        # Режим approved_images: открываем пикер и автоматически находим
+        # визуально совпадающий кадр через pHash.
+        print(f"  🖼 Открываю пикер «Первый кадр»...")
+        frame_opened = click_first_frame_slot(page)
+        if not frame_opened:
+            print(f"  👆 Кликни на «Первый кадр» вручную.")
+            input("     Когда пикер открылся — нажми Enter... ")
+        print(f"  🔍 Автопоиск по pHash (approved: {approved_name})...")
+        selected = select_from_picker_by_image(page, approved_path)
+        if not selected:
+            print(f"  ⚠ Не нашёл автоматически — выбери '{approved_name}' вручную.")
+            input(f"     Когда кадр выбран — нажми Enter... ")
     else:
         # Определяем UUID целевого изображения (галерея: newest first, сцена N = total-N)
         target_idx = max(0, min(total_images - scene.index, total_images - 1))
@@ -626,25 +1102,6 @@ def generate_video_scene(page: Page, scene: VideoScene, output_dir: Path,
     go_back_to_gallery(page)
 
 
-def resolve_flow_url(markdown_path: Path) -> str:
-    """Определяет Flow URL по имени папки сценария или через ввод пользователя."""
-    # Имя папки сценария (напр. "икар_и_дедал")
-    project_key = markdown_path.parent.name.lower()
-    if project_key in FLOW_PROJECTS:
-        flow_id = FLOW_PROJECTS[project_key]
-        print(f"🔗 Flow-проект: {project_key} → {flow_id}")
-        return f"{FLOW_BASE_URL}/{flow_id}"
-
-    # Неизвестный проект — просим ввести flow_id
-    print(f"⚠ Проект «{project_key}» не найден в FLOW_PROJECTS.")
-    print("  Добавь его в словарь FLOW_PROJECTS в начале video_runner.py")
-    print("  или введи flow_id сейчас (из URL Flow-проекта):")
-    flow_id = input("  flow_id: ").strip()
-    if not flow_id:
-        raise ValueError("flow_id не указан — невозможно продолжить")
-    return f"{FLOW_BASE_URL}/{flow_id}"
-
-
 def run(markdown_path: Path, scenes_filter: set[int] | None, start_from: int, headless: bool = False):
     title, scenes = parse_video_markdown(markdown_path)
 
@@ -656,15 +1113,34 @@ def run(markdown_path: Path, scenes_filter: set[int] | None, start_from: int, he
     print(f"🎬 Миф: {title}")
     print(f"📑 Будет обработано сцен: {len(scenes)} (номера: {[s.index for s in scenes]})")
 
-    slug = slugify(title)
-    output_dir = OUTPUT_ROOT / slug / "video"
+    # Резолвим Flow-проект ДО запуска браузера: если сценарий новый,
+    # пользователя спросят flow_id сразу, без лишнего запуска Chromium.
+    flow_url = resolve_flow_url(markdown_path)
+
+    scenario_folder = resolve_scenario_folder(markdown_path)
+    output_dir = CONTENT_ROOT / scenario_folder / "video"
     output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"📂 Видео будут сохраняться в: {output_dir}")
+
+    # Подтягиваем карту финализированных картинок:
+    # {1: 'scene_01_v3.jpg', 2: 'scene_02_v2.png', ...}
+    # Пользователь увидит в консоли какой именно вариант выбирать в Flow-пикере.
+    approved_map = load_approved_images_map(scenario_folder)
+    if approved_map:
+        print(f"✅ Найдено {len(approved_map)} отобранных кадров в approved_images/")
+    else:
+        print(f"⚠ approved_images/ пуста — выбор картинок будет по индексу галереи")
 
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as p:
+        # channel="chrome" — используем установленный Google Chrome вместо
+        # Playwright-Chromium "for testing" (он валится с STATUS_BREAKPOINT
+        # при старте). То же самое делает imagefx_runner, и профиль общий —
+        # пользователь уже залогинен в Google/Flow.
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(PROFILE_DIR),
+            channel="chrome",
             headless=headless,
             accept_downloads=True,
             viewport={"width": 1400, "height": 900},
@@ -677,26 +1153,53 @@ def run(markdown_path: Path, scenes_filter: set[int] | None, start_from: int, he
         )
         context.add_init_script(STEALTH_INIT_SCRIPT)
 
+        # Разрешаем clipboard read/write для labs.google — нужно для
+        # мгновенной вставки промпта через navigator.clipboard.writeText.
+        try:
+            context.grant_permissions(
+                ["clipboard-read", "clipboard-write"],
+                origin="https://labs.google",
+            )
+        except Exception as e:
+            print(f"  ⚠ Не удалось выдать clipboard-права: {e}")
+
         page = context.pages[0] if context.pages else context.new_page()
 
-        flow_url = resolve_flow_url(markdown_path)
         print("\n🌐 Открываю Flow-проект")
         page.goto(flow_url, timeout=PAGE_LOAD_TIMEOUT, wait_until="domcontentloaded")
 
         print("\n⏸  Дождись полной загрузки проекта.")
         input("   Нажми Enter для старта... ")
 
+        # После Enter даём Flow 3 секунды на стабилизацию — если юзер нажал
+        # прям сразу после того как страница визуально открылась, там ещё
+        # могут идти XHR/hydration, и первая page.evaluate ловит
+        # "Execution context was destroyed".
+        print("⏱  Жду 3 сек стабилизации страницы...")
+        time.sleep(3)
+        try:
+            page.wait_for_load_state("networkidle", timeout=10_000)
+        except Exception:
+            pass
+
         for i, scene in enumerate(scenes):
             try:
-                generate_video_scene(page, scene, output_dir, first_scene=(i == 0))
+                generate_video_scene(page, scene, output_dir, approved_map,
+                                     first_scene=(i == 0))
             except Exception as e:
                 print(f"  ✗ Ошибка на сцене {scene.index}: {e}")
 
             if i < len(scenes) - 1:
-                pause = random.uniform(30, 60)
-                print(f"  💤 Пауза {int(pause)} сек перед следующей сценой...")
-                time.sleep(pause)
-                random_mouse_wander(page)
+                # Кофе-брейк теперь каждые 3 сцены и куда длиннее — Google
+                # явно недовольна частой генерацией Veo 3.1.
+                if (i + 1) % 3 == 0:
+                    pause = random.uniform(300, 600)  # 5-10 мин
+                    mins = pause / 60
+                    print(f"  ☕ Кофе-брейк {mins:.1f} мин (каждые 3 сцены)...")
+                else:
+                    pause = random.uniform(90, 180)  # 1.5-3 мин
+                    print(f"  💤 Пауза {int(pause)} сек перед следующей сценой...")
+                idle_like_human(page, pause)
 
         print(f"\n✅ Готово. Видео в: {output_dir}")
         input("Нажми Enter для закрытия браузера... ")

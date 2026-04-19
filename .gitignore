@@ -10,6 +10,10 @@ content/ящик_пандоры/*.mp4
 content/ящик_пандоры/*.mp3
 content/ящик_пандоры/*.png
 content/ящик_пандоры/*.zip
+content/Ящик Пандоры/*.mp4
+content/Ящик Пандоры/*.mp3
+content/Ящик Пандоры/*.png
+content/Ящик Пандоры/*.zip
 
 # Remotion
 remotion/node_modules/
@@ -22,6 +26,16 @@ remotion/public/*.mp4
 
 # Браузерный профиль автоматизации
 automation/.browser_profile/
+
+# Логи установки CosyVoice + временные TTS-файлы обучения
+automation/_setup_logs/
+automation/TTS_AUDIO_FOR_TRAIN.mp3
+automation/TTS_SPEECH_TEXT
+automation/__pycache__/
+
+# Webapp: выбор пользователя — per-machine state, не надо в репо
+webapp/selections/
+webapp/__pycache__/
 
 # Временные файлы
 tmp_video_frames/
