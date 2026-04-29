@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="sidepanel.css" />
+    <title>BOGI Promptr</title>
+  </head>
+  <body>
+    <header>
+      <div class="title-row">
+        <h1>BOGI Promptr</h1>
+        <button id="reload-btn" title="Обновить список сценариев">↻</button>
+      </div>
+      <div class="row">
+        <select id="scenario-select">
+          <option value="">— выбери сценарий —</option>
+        </select>
+      </div>
+      <div class="row">
+        <select id="kind-select">
+          <option value="images">Картинки (images.md)</option>
+          <option value="video">Видео (video.md)</option>
+        </select>
+      </div>
+      <div class="row status">
+        <span id="progress">—</span>
+        <label class="autocopy">
+          <input id="autocopy" type="checkbox" checked />
+          авто-копировать на «Generate»
+        </label>
+      </div>
+    </header>
+    <main id="prompts" class="prompts"></main>
+    <footer>
+      <div class="footer-head">
+        <span>Лог</span>
+        <button id="clear-log" title="Очистить лог">×</button>
+      </div>
+      <div id="log"></div>
+    </footer>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

@@ -1,0 +1,204 @@
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", "Roboto", sans-serif;
+  background: #0e1014;
+  color: #e6e6e6;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+header {
+  padding: 10px 12px;
+  border-bottom: 1px solid #1f232b;
+  background: #0e1014;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+h1 {
+  margin: 0;
+  font-size: 14px;
+  color: #1bd690;
+  letter-spacing: 0.2px;
+}
+
+.row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.row.status {
+  justify-content: space-between;
+  font-size: 11px;
+  color: #888;
+}
+
+select,
+button {
+  background: #1a1d24;
+  color: #e6e6e6;
+  border: 1px solid #2a2f3a;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+select { width: 100%; }
+button { cursor: pointer; }
+button:hover { background: #232831; }
+
+#reload-btn { padding: 4px 10px; font-size: 14px; }
+
+.autocopy {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+main.prompts {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.prompt-card {
+  padding: 10px;
+  margin-bottom: 6px;
+  background: #15181f;
+  border: 1px solid #1f232b;
+  border-radius: 8px;
+  transition: border-color 0.15s, opacity 0.15s;
+}
+
+.prompt-card.current {
+  border-color: #1bd690;
+  box-shadow: 0 0 0 1px rgba(27, 214, 144, 0.2);
+}
+
+.prompt-card.done {
+  opacity: 0.45;
+}
+
+.prompt-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+
+.scene-num {
+  color: #1bd690;
+  font-weight: 600;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.marker {
+  color: #999;
+  font-size: 11px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+.copy-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.copy-btn.copied {
+  background: #1bd690;
+  color: #0e1014;
+  border-color: #1bd690;
+}
+
+.text {
+  margin: 6px 0 0;
+  color: #c4c4c4;
+  font-size: 12px;
+  line-height: 1.4em;
+}
+
+.prompt-text {
+  margin-top: 6px;
+  color: #888;
+  font-size: 11px;
+  max-height: 4.4em;
+  overflow: hidden;
+  line-height: 1.4em;
+}
+
+.prompt-card.expanded .prompt-text {
+  max-height: none;
+}
+
+.expand {
+  margin-top: 4px;
+  color: #1bd690;
+  cursor: pointer;
+  font-size: 11px;
+  user-select: none;
+  display: inline-block;
+}
+
+footer {
+  border-top: 1px solid #1f232b;
+  background: #0c0e12;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 140px;
+}
+
+.footer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: #888;
+  border-bottom: 1px solid #1f232b;
+}
+
+.footer-head button {
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+#log {
+  padding: 6px 12px;
+  overflow-y: auto;
+  font-size: 11px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  flex: 1;
+}
+
+.log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-bottom: 2px;
+  color: #888;
+}
+
+.log-line.ok { color: #1bd690; }
+.log-line.err { color: #ff6b6b; }
+.log-line.warn { color: #ffd166; }

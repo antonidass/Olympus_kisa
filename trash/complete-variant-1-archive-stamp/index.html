@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Кисы Олимпа · Архивная печать</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=DM+Sans:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;1,9..144,300;1,9..144,400&display=swap" rel="stylesheet">
+<style>
+/*
+  ВАРИАНТ 1 · «Архивная печать»
+  Концепция: каждый отревьюенный миф можно «отправить в архив» —
+  это значит, что он опубликован в TikTok / YouTube. Архив получает
+  настоящую типографскую печать: диагональный штамп с датой выхода,
+  отдельная подсветка карточки тёплым амбром. Эстетика — старая
+  редакция: Fraunces для заголовков, моноширинный для штампов,
+  бумажно-зернистый фон, крупные полигональные печати.
+*/
+
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+:root {
+  --bg: #0c0c0e;
+  --bg-sidebar: #101012;
+  --bg-panel: #141418;
+  --bg-card: #1a1a20;
+  --bg-hover: #1e1e26;
+  --border: #222228;
+  --border-hi: #33333c;
+  --text: #dddad5;
+  --text-dim: #777580;
+  --text-ghost: #444250;
+  --blue: #5b8af5;
+  --blue-dim: #5b8af518;
+  --green: #3dd68c;
+  --green-dim: #3dd68c18;
+  --red: #f55b5b;
+  /* «Архивная» палитра — амбер + жжёная охра */
+  --amber: #f5a623;
+  --amber-dim: #f5a62318;
+  --amber-soft: #ffc966;
+  --amber-deep: #b6781a;
+  --amber-burn: #7a4f10;
+  --stamp-red: #c14848;
+  --paper: #1c1814;
+  --font-mono: 'IBM Plex Mono', monospace;
+  --font-sans: 'DM Sans', sans-serif;
+  --font-display: 'Fraunces', serif;
+}
+
+html { font-size: 14px; }
+
+body {
+  background:
+    radial-gradient(ellipse at 20% 0%, #1a1410 0%, transparent 60%),
+    radial-gradient(ellipse at 80% 100%, #161210 0%, transparent 50%),
+    var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+  padding: 32px;
+  /* Зернистая «бумажная» текстура */
+  position: relative;
+}
+body::before {
+  content:'';
+  position:fixed; inset:0;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='2'/><feColorMatrix values='0 0 0 0 0.6  0 0 0 0 0.5  0 0 0 0 0.3  0 0 0 0.04 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  pointer-events:none;
+  mix-blend-mode: overlay;
+  opacity: 0.45;
+  z-index: 1;
+}
+
+.shell { max-width: 1480px; margin: 0 auto; position: relative; z-index: 2; }
+
+/* ─── ЗАГОЛОВОК МАКЕТА ─── */
+.demo-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin-bottom: 28px; padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+.demo-head-title {
+  font-family: var(--font-display);
+  font-style: italic; font-weight: 300;
+  font-size: 1.6rem; color: var(--text);
+}
+.demo-head-title em { color: var(--amber); font-style: italic; }
+.demo-head-meta {
+  font-family: var(--font-mono); font-size: 0.7rem;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--text-ghost);
+}
+.demo-head-meta b { color: var(--amber); font-weight: 500; }
+
+/* ─── ГРИД 3 ВИДА ─── */
+.grid {
+  display: grid;
+  grid-template-columns: 360px 1fr 320px;
+  gap: 24px;
+  align-items: start;
+}
+
+/* ── СПИСОК МИФОВ ── */
+.list {
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.list-head {
+  padding: 16px 18px 12px;
+  display: flex; justify-content: space-between; align-items: baseline;
+  border-bottom: 1px solid var(--border);
+}
+.list-head-title {
+  font-family: var(--font-display); font-weight: 400;
+  font-size: 1.1rem; letter-spacing: -0.01em;
+}
+.list-head-count {
+  font-family: var(--font-mono); font-size: 0.65rem;
+  letter-spacing: 0.18em; color: var(--text-ghost);
+}
+.list-filter {
+  display: flex; gap: 6px; padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.chip {
+  font-family: var(--font-mono); font-size: 0.6rem;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 5px 9px; border-radius: 3px;
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text-dim); cursor: pointer;
+  transition: all .15s;
+}
+.chip:hover { border-color: var(--border-hi); color: var(--text); }
+.chip.active { background: var(--blue-dim); border-color: var(--blue); color: var(--blue); }
+.chip.archive-chip.active {
+  background: var(--amber-dim); border-color: var(--amber); color: var(--amber);
+}
+
+.list-items { padding: 8px 10px 14px; }
+
+.item {
+  position: relative;
+  display: grid; grid-template-columns: 32px 1fr auto;
+  gap: 12px; align-items: center;
+  padding: 13px 16px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  cursor: pointer;
+  transition: all .18s;
+}
+.item:hover { background: var(--bg-card); border-color: var(--border); }
+.item-num {
+  font-family: var(--font-mono); font-size: 0.8rem;
+  color: var(--text-ghost); text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.item-name {
+  font-size: 0.92rem; font-weight: 500; color: var(--text);
+}
+.item-sub {
+  font-family: var(--font-mono); font-size: 0.66rem;
+  color: var(--text-ghost); margin-top: 3px; letter-spacing: 0.04em;
+}
+.item-status {
+  font-family: var(--font-mono); font-size: 0.58rem;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 3px;
+}
+.item-status.in_progress { background: var(--blue-dim); color: var(--blue); }
+.item-status.ready { background: var(--green-dim); color: var(--green); }
+.item-status.new { background: var(--bg); color: var(--text-dim); border:1px solid var(--border); }
+
+/* Особый стиль для архивированных */
+.item.archived {
+  background:
+    linear-gradient(90deg, rgba(245,166,35,.08) 0%, transparent 70%),
+    var(--paper);
+  border-color: rgba(245,166,35,.18);
+}
+.item.archived .item-num { color: var(--amber); }
+.item.archived .item-name { color: var(--amber-soft); }
+.item.archived .item-sub { color: var(--amber-deep); }
+.item.archived .item-status {
+  background: transparent;
+  border: 1px solid var(--amber-deep);
+  color: var(--amber);
+  position: relative;
+  padding-left: 16px;
+}
+.item.archived .item-status::before {
+  content: ''; position: absolute; left: 6px; top: 50%; transform: translateY(-50%);
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--amber); box-shadow: 0 0 6px var(--amber);
+}
+
+.item.active {
+  background: var(--bg-card);
+  border-color: var(--amber);
+  box-shadow: 0 0 0 1px var(--amber), 0 6px 24px rgba(245,166,35,.15);
+}
+.item.active::before {
+  content:''; position: absolute; left: -10px; top: 12px; bottom: 12px;
+  width: 2px; background: var(--amber);
+}
+
+/* ── ДЕТАЛКА ── */
+.detail {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 32px 36px;
+  position: relative;
+  overflow: hidden;
+  min-height: 620px;
+}
+
+.detail-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.62rem; letter-spacing: 0.22em;
+  text-transform: uppercase; color: var(--amber);
+  margin-bottom: 14px;
+}
+.detail-title {
+  font-family: var(--font-display);
+  font-weight: 300; font-size: 2.6rem;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.detail-title em {
+  font-style: italic; font-weight: 400;
+  color: var(--amber-soft);
+}
+.detail-sub {
+  font-family: var(--font-mono);
+  font-size: 0.7rem; letter-spacing: 0.1em;
+  color: var(--text-dim);
+  margin-bottom: 28px;
+}
+.detail-sub b { color: var(--text); font-weight: 500; }
+
+/* Прогресс по 3 этапам — мини-карточки */
+.stages {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 10px; margin-bottom: 28px;
+}
+.stage {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 14px 12px;
+}
+.stage-icon {
+  width: 22px; height: 22px; color: var(--text-ghost);
+  margin-bottom: 8px;
+}
+.stage-name {
+  font-family: var(--font-mono); font-size: 0.62rem;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--text-dim); margin-bottom: 6px;
+}
+.stage-val {
+  font-family: var(--font-display); font-style: italic;
+  font-weight: 300; font-size: 1.4rem; color: var(--text);
+}
+.stage-val small {
+  font-family: var(--font-mono); font-size: 0.7rem;
+  color: var(--text-ghost); font-style: normal;
+  margin-left: 4px;
+}
+.stage.done .stage-icon { color: var(--green); }
+.stage.done .stage-val { color: var(--green); }
+
+.detail-scenes-title {
+  font-family: var(--font-mono); font-size: 0.62rem;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+  display: flex; align-items: baseline; justify-content: space-between;
+}
+.detail-scenes-title b { color: var(--amber); }
+.scene-tiles {
+  display: grid; grid-template-columns: repeat(8, 1fr);
+  gap: 4px; margin-bottom: 32px;
+}
+.tile {
+  aspect-ratio: 1; border-radius: 3px;
+  background: var(--border);
+  position: relative;
+}
+.tile.done { background: var(--green); }
+.tile.regen { background: var(--red); }
+.tile.archived { background: var(--amber); }
+
+/* ─── ГЛАВНОЕ: КНОПКА «ОТПРАВИТЬ В АРХИВ» ─── */
+.archive-action {
+  display: flex; gap: 14px; align-items: stretch;
+  margin-top: 24px;
+}
+.btn-archive {
+  flex: 1;
+  position: relative;
+  padding: 18px 24px;
+  background: var(--bg-card);
+  border: 1px solid var(--amber-burn);
+  border-radius: 6px;
+  display: flex; align-items: center; gap: 16px;
+  cursor: pointer;
+  transition: all .25s;
+  text-align: left;
+  overflow: hidden;
+}
+.btn-archive::before {
+  content:''; position: absolute; inset: 0;
+  background: linear-gradient(135deg, transparent 0%, rgba(245,166,35,.06) 100%);
+  pointer-events: none;
+}
+.btn-archive:hover {
+  background: rgba(245,166,35,.06);
+  border-color: var(--amber);
+  box-shadow: 0 0 0 1px var(--amber-burn), 0 8px 28px rgba(245,166,35,.12);
+}
+.btn-archive-stamp {
+  width: 56px; height: 56px;
+  border: 2px solid var(--amber);
+  border-radius: 50%;
+  display: grid; place-items: center;
+  flex-shrink: 0;
+  position: relative;
+  color: var(--amber);
+}
+.btn-archive-stamp::before, .btn-archive-stamp::after {
+  content:''; position: absolute; inset: 4px;
+  border-radius: 50%; border: 1px dashed var(--amber-deep);
+}
+.btn-archive-stamp::after { inset: -4px; border-style: solid; border-color: rgba(245,166,35,.2); }
+.btn-archive-stamp svg { width: 26px; height: 26px; }
+.btn-archive-text { flex: 1; min-width: 0; }
+.btn-archive-eyebrow {
+  font-family: var(--font-mono); font-size: 0.58rem;
+  letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--amber); margin-bottom: 4px;
+}
+.btn-archive-title {
+  font-family: var(--font-display); font-style: italic;
+  font-weight: 400; font-size: 1.3rem; color: var(--text);
+  line-height: 1.1;
+}
+.btn-archive-desc {
+  font-size: 0.72rem; color: var(--text-dim);
+  margin-top: 4px; max-width: 360px;
+}
+.btn-archive-arrow {
+  font-family: var(--font-display); font-size: 1.6rem;
+  color: var(--amber); flex-shrink: 0;
+  transition: transform .25s;
+}
+.btn-archive:hover .btn-archive-arrow { transform: translateX(6px); }
+
+/* Альтернативный вид — когда уже архивировано */
+.detail.is-archived {
+  background:
+    linear-gradient(180deg, rgba(245,166,35,.04) 0%, transparent 60%),
+    var(--paper);
+  border-color: var(--amber-burn);
+}
+/* Большой штамп поверх детальной карточки */
+.detail-stamp {
+  position: absolute;
+  top: 32px; right: 32px;
+  width: 168px; height: 168px;
+  pointer-events: none;
+  transform: rotate(-8deg);
+  opacity: .92;
+}
+.detail-stamp svg { width: 100%; height: 100%; }
+
+/* Кнопка «снять с архива» — приглушённая */
+.btn-unarchive {
+  flex: 1;
+  padding: 14px 20px;
+  background: transparent;
+  border: 1px dashed var(--amber-burn);
+  border-radius: 6px;
+  color: var(--amber-deep);
+  font-family: var(--font-mono);
+  font-size: 0.7rem; letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all .2s;
+}
+.btn-unarchive:hover {
+  border-color: var(--amber); color: var(--amber);
+}
+
+/* ── ПРАВАЯ КОЛОНКА — ФРАГМЕНТ РЕВЬЮ ── */
+.review-frag {
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.frag-head {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.frag-head-eyebrow {
+  font-family: var(--font-mono); font-size: 0.58rem;
+  letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--text-ghost); margin-bottom: 6px;
+}
+.frag-head-title {
+  font-family: var(--font-display); font-style: italic;
+  font-weight: 400; font-size: 1.05rem;
+}
+
+.frag-sb {
+  display: flex;
+}
+.frag-rail {
+  width: 44px; padding: 12px 0;
+  display: flex; flex-direction: column; gap: 8px; align-items: center;
+  border-right: 1px solid var(--border);
+}
+.rail-btn {
+  width: 32px; height: 32px;
+  border-radius: 6px;
+  display: grid; place-items: center;
+  background: transparent; border: 1px solid transparent;
+  color: var(--text-dim); cursor: pointer;
+}
+.rail-btn.active { background: var(--blue-dim); color: var(--blue); border-color: var(--blue); }
+.rail-btn svg { width: 14px; height: 14px; }
+
+.frag-body { flex: 1; padding: 12px 14px; }
+.frag-body-title {
+  font-family: var(--font-mono); font-size: 0.6rem;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--text-ghost); margin-bottom: 10px;
+}
+
+.scene-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px; border-radius: 4px;
+  font-family: var(--font-mono); font-size: 0.7rem;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+.scene-row.done { color: var(--green); }
+.scene-row.dot::before {
+  content:''; width:6px; height:6px; border-radius: 50%;
+  background: currentColor; opacity: .7;
+}
+
+/* SB action slot — кнопка архивирования внутри сайдбара ревью */
+.sb-archive {
+  margin: 14px;
+  padding: 10px 12px;
+  background:
+    linear-gradient(135deg, rgba(245,166,35,.08), rgba(245,166,35,.02));
+  border: 1px solid var(--amber-burn);
+  border-radius: 5px;
+  display: flex; align-items: center; gap: 10px;
+  cursor: pointer;
+  transition: all .2s;
+}
+.sb-archive:hover { background: rgba(245,166,35,.12); border-color: var(--amber); }
+.sb-archive-icon {
+  width: 24px; height: 24px;
+  color: var(--amber);
+  flex-shrink: 0;
+}
+.sb-archive-text {
+  font-family: var(--font-mono);
+  font-size: 0.66rem; letter-spacing: 0.1em;
+  color: var(--amber); line-height: 1.3;
+}
+.sb-archive-text small {
+  display: block;
+  color: var(--amber-deep);
+  font-size: 0.58rem; letter-spacing: 0.14em;
+  text-transform: uppercase; margin-top: 2px;
+}
+
+/* Маленький значок «АРХИВ» в хлебных крошках */
+.frag-crumb {
+  display: flex; align-items: center; gap: 8px; margin-top: 4px;
+  font-family: var(--font-mono); font-size: 0.62rem;
+  color: var(--text-dim);
+}
+.frag-crumb-arch {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--font-mono); font-size: 0.55rem;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--amber);
+  border: 1px solid var(--amber-burn);
+  padding: 2px 6px; border-radius: 3px;
+  background: rgba(245,166,35,.06);
+}
+.frag-crumb-arch svg { width: 9px; height: 9px; }
+
+/* Подсказка снизу */
+.demo-foot {
+  margin-top: 28px;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  color: var(--text-ghost);
+  text-align: center;
+  padding-top: 18px;
+  border-top: 1px dashed var(--border);
+}
+.demo-foot b { color: var(--amber); font-weight: 400; }
+
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <header class="demo-head">
+    <div class="demo-head-title">
+      Вариант 01 · <em>Архивная печать</em>
+    </div>
+    <div class="demo-head-meta">
+      аэстетика — <b>EDITORIAL</b> · акцент — амбер #f5a623
+    </div>
+  </header>
+
+  <div class="grid">
+
+    <!-- ── ЛЕВО: ХАБ-СПИСОК ── -->
+    <aside class="list">
+      <div class="list-head">
+        <div class="list-head-title">Мифы</div>
+        <div class="list-head-count">14 / 14</div>
+      </div>
+      <div class="list-filter">
+        <button class="chip active">все</button>
+        <button class="chip">в работе</button>
+        <button class="chip">готовы</button>
+        <button class="chip">новые</button>
+        <button class="chip archive-chip">в архиве</button>
+      </div>
+      <div class="list-items">
+
+        <!-- архивированный пример -->
+        <div class="item archived">
+          <div class="item-num">01</div>
+          <div>
+            <div class="item-name">Пандора</div>
+            <div class="item-sub">25 сцен · опубликован 18 апр</div>
+          </div>
+          <div class="item-status">архив</div>
+        </div>
+
+        <div class="item archived">
+          <div class="item-num">02</div>
+          <div>
+            <div class="item-name">Икар и Дедал</div>
+            <div class="item-sub">22 сцены · опубликован 21 апр</div>
+          </div>
+          <div class="item-status">архив</div>
+        </div>
+
+        <div class="item archived">
+          <div class="item-num">03</div>
+          <div>
+            <div class="item-name">Тесей и Минотавр</div>
+            <div class="item-sub">23 сцены · опубликован 23 апр</div>
+          </div>
+          <div class="item-status">архив</div>
+        </div>
+
+        <!-- активный — выбран -->
+        <div class="item active">
+          <div class="item-num">04</div>
+          <div>
+            <div class="item-name">Сизифов труд</div>
+            <div class="item-sub">21 сцена · 21 / 21 готово</div>
+          </div>
+          <div class="item-status ready">готов</div>
+        </div>
+
+        <div class="item">
+          <div class="item-num">05</div>
+          <div>
+            <div class="item-name">Мидас и золото</div>
+            <div class="item-sub">24 сцены · 18 / 24</div>
+          </div>
+          <div class="item-status in_progress">в работе</div>
+        </div>
+
+        <div class="item">
+          <div class="item-num">06</div>
+          <div>
+            <div class="item-name">Орфей и Эвридика</div>
+            <div class="item-sub">26 сцен · не начат</div>
+          </div>
+          <div class="item-status new">нов.</div>
+        </div>
+
+        <div class="item">
+          <div class="item-num">07</div>
+          <div>
+            <div class="item-name">Персефона и Аид</div>
+            <div class="item-sub">22 сцены · не начат</div>
+          </div>
+          <div class="item-status new">нов.</div>
+        </div>
+
+        <div class="item">
+          <div class="item-num">08</div>
+          <div>
+            <div class="item-name">Арахна</div>
+            <div class="item-sub">19 сцен · не начат</div>
+          </div>
+          <div class="item-status new">нов.</div>
+        </div>
+
+      </div>
+    </aside>
+
+    <!-- ── ЦЕНТР: ДЕТАЛИЗАЦИЯ — миф готов, кнопка «отправить в архив» ── -->
+    <main class="detail">
+      <div class="detail-eyebrow">— миф №04</div>
+      <h1 class="detail-title">Сизифов <em>труд</em></h1>
+      <div class="detail-sub">21 сцена · отревьюено <b>полностью</b> · готов к финалу</div>
+
+      <div class="stages">
+        <div class="stage done">
+          <svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          </svg>
+          <div class="stage-name">озвучка</div>
+          <div class="stage-val">21<small>/ 21</small></div>
+        </div>
+        <div class="stage done">
+          <svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <circle cx="8.5" cy="8.5" r="1.5"/>
+            <path d="M21 15l-5-5L5 21"/>
+          </svg>
+          <div class="stage-name">картинки</div>
+          <div class="stage-val">21<small>/ 21</small></div>
+        </div>
+        <div class="stage done">
+          <svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="2" y="5" width="20" height="14" rx="2"/>
+            <polygon points="10,9 16,12 10,15" fill="currentColor"/>
+          </svg>
+          <div class="stage-name">видео</div>
+          <div class="stage-val">21<small>/ 21</small></div>
+        </div>
+      </div>
+
+      <div class="detail-scenes-title">
+        <span>Сцены</span><b>21 / 21 готово</b>
+      </div>
+      <div class="scene-tiles">
+        <!-- 21 готовая -->
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+      </div>
+
+      <!-- ─── СУТЬ ВАРИАНТА: Кнопка-печать ─── -->
+      <div class="archive-action">
+        <button class="btn-archive">
+          <div class="btn-archive-stamp">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+              <path d="M12 2v6"/>
+              <path d="M12 22V8"/>
+              <path d="M5 22h14"/>
+              <path d="M5 22v-3a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3v3"/>
+              <circle cx="12" cy="5" r="3"/>
+            </svg>
+          </div>
+          <div class="btn-archive-text">
+            <div class="btn-archive-eyebrow">— действие · необратимо отметить</div>
+            <div class="btn-archive-title">Отправить в архив</div>
+            <div class="btn-archive-desc">
+              Миф уже опубликован в TikTok / YouTube. Поставит штамп
+              и спрячет его из «в работе».
+            </div>
+          </div>
+          <div class="btn-archive-arrow">→</div>
+        </button>
+      </div>
+    </main>
+
+    <!-- ── ПРАВО: ФРАГМЕНТ ВИДА «РЕВЬЮ» ── -->
+    <aside class="review-frag">
+      <div class="frag-head">
+        <div class="frag-head-eyebrow">внутри сценария</div>
+        <div class="frag-head-title">Икар и Дедал</div>
+        <div class="frag-crumb">
+          ревью озвучки
+          <span class="frag-crumb-arch">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2l2 4 4 .6-3 3 .8 4.4-3.8-2-3.8 2 .8-4.4-3-3 4-.6z"/>
+            </svg>
+            архив
+          </span>
+        </div>
+      </div>
+
+      <div class="frag-sb">
+        <div class="frag-rail">
+          <button class="rail-btn active" title="Озвучка">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            </svg>
+          </button>
+          <button class="rail-btn" title="Картинки">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/>
+              <path d="M21 15l-5-5L5 21"/>
+            </svg>
+          </button>
+          <button class="rail-btn" title="Видео">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="5" width="20" height="14" rx="2"/>
+              <polygon points="10,9 16,12 10,15" fill="currentColor"/>
+            </svg>
+          </button>
+        </div>
+        <div class="frag-body">
+          <!-- Кнопка-печать ВНУТРИ сайдбара ревью -->
+          <div class="sb-archive" style="margin: 0 0 14px 0;">
+            <svg class="sb-archive-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+              <circle cx="12" cy="12" r="9" stroke-dasharray="3 2"/>
+              <circle cx="12" cy="12" r="6"/>
+              <path d="M9 12l2 2 4-4" stroke-width="2"/>
+            </svg>
+            <div class="sb-archive-text">
+              в архиве
+              <small>опубликован 21 апр</small>
+            </div>
+          </div>
+
+          <div class="frag-body-title">Сцены</div>
+          <div class="scene-row done dot">001 · сцена готова</div>
+          <div class="scene-row done dot">002 · сцена готова</div>
+          <div class="scene-row done dot">003 · сцена готова</div>
+          <div class="scene-row done dot">004 · сцена готова</div>
+          <div class="scene-row done dot">005 · сцена готова</div>
+          <div class="scene-row done dot">006 · сцена готова</div>
+          <div class="scene-row done dot">007 · сцена готова</div>
+          <div class="scene-row done dot">008 · сцена готова</div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Второй ряд: показываем ВЫБРАННЫЙ архивированный миф со штампом -->
+  <h2 style="font-family:var(--font-display); font-style:italic; font-weight:300; font-size:1.3rem; margin: 40px 0 18px; color:var(--text); padding-top:24px; border-top: 1px solid var(--border);">
+    Состояние <em style="color:var(--amber);">после</em> отправки в архив
+  </h2>
+
+  <div class="grid">
+
+    <!-- список ничего не меняет -->
+    <aside class="list">
+      <div class="list-head">
+        <div class="list-head-title">Мифы</div>
+        <div class="list-head-count">14 / 14</div>
+      </div>
+      <div class="list-items" style="padding-top:14px;">
+        <div class="item active archived">
+          <div class="item-num">02</div>
+          <div>
+            <div class="item-name">Икар и Дедал</div>
+            <div class="item-sub">22 сцены · опубликован 21 апр</div>
+          </div>
+          <div class="item-status">архив</div>
+        </div>
+        <div class="item">
+          <div class="item-num">04</div>
+          <div>
+            <div class="item-name">Сизифов труд</div>
+            <div class="item-sub">21 сцена · готов к сборке</div>
+          </div>
+          <div class="item-status ready">готов</div>
+        </div>
+        <div class="item">
+          <div class="item-num">05</div>
+          <div>
+            <div class="item-name">Мидас и золото</div>
+            <div class="item-sub">24 сцены · 18 / 24</div>
+          </div>
+          <div class="item-status in_progress">в работе</div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ДЕТАЛКА — заштампованная -->
+    <main class="detail is-archived">
+
+      <!-- огромный диагональный штамп -->
+      <div class="detail-stamp">
+        <svg viewBox="0 0 200 200">
+          <defs>
+            <path id="topArc" d="M 30,100 A 70,70 0 0 1 170,100"/>
+            <path id="botArc" d="M 30,100 A 70,70 0 0 0 170,100"/>
+          </defs>
+          <!-- двойная окружность -->
+          <circle cx="100" cy="100" r="92" fill="none" stroke="#f5a623" stroke-width="2"/>
+          <circle cx="100" cy="100" r="80" fill="none" stroke="#f5a623" stroke-width="3"/>
+          <!-- текст по дуге сверху -->
+          <text font-family="IBM Plex Mono" font-weight="600" font-size="11" letter-spacing="3" fill="#f5a623">
+            <textPath href="#topArc" startOffset="50%" text-anchor="middle">АРХИВ · ВЫШЕЛ В ЭФИР</textPath>
+          </text>
+          <text font-family="IBM Plex Mono" font-weight="500" font-size="9" letter-spacing="3" fill="#b6781a">
+            <textPath href="#botArc" startOffset="50%" text-anchor="middle">КИСЫ ОЛИМПА · 2026</textPath>
+          </text>
+          <!-- центральная кошка-силуэт + дата -->
+          <text x="100" y="92" text-anchor="middle" font-family="Fraunces" font-style="italic" font-weight="400" font-size="22" fill="#ffc966">№02</text>
+          <text x="100" y="116" text-anchor="middle" font-family="IBM Plex Mono" font-weight="500" font-size="11" fill="#f5a623" letter-spacing="2">21·04·26</text>
+          <!-- декоративные звёзды -->
+          <text x="38" y="105" font-size="14" fill="#f5a623">✦</text>
+          <text x="155" y="105" font-size="14" fill="#f5a623">✦</text>
+        </svg>
+      </div>
+
+      <div class="detail-eyebrow" style="color:var(--amber-deep);">— миф №02 · в архиве</div>
+      <h1 class="detail-title">Икар и <em>Дедал</em></h1>
+      <div class="detail-sub" style="color:var(--amber-deep);">22 сцены · опубликован <b style="color:var(--amber);">21 апр 2026</b></div>
+
+      <div class="stages">
+        <div class="stage done"><svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg><div class="stage-name">озвучка</div><div class="stage-val">22<small>/ 22</small></div></div>
+        <div class="stage done"><svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg><div class="stage-name">картинки</div><div class="stage-val">22<small>/ 22</small></div></div>
+        <div class="stage done"><svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="5" width="20" height="14" rx="2"/><polygon points="10,9 16,12 10,15" fill="currentColor"/></svg><div class="stage-name">видео</div><div class="stage-val">22<small>/ 22</small></div></div>
+      </div>
+
+      <div class="detail-scenes-title">
+        <span>Сцены · в архиве</span><b style="color:var(--amber);">22 / 22</b>
+      </div>
+      <div class="scene-tiles">
+        <div class="tile archived"></div><div class="tile archived"></div><div class="tile archived"></div>
+        <div class="tile archived"></div><div class="tile archived"></div><div class="tile archived"></div>
+        <div class="tile archived"></div><div class="tile archived"></div><div class="tile archived"></div>
+        <div class="tile archived"></div><div class="tile archived"></div><div class="tile archived"></div>
+        <div class="tile archived"></div><div class="tile archived"></div><div class="tile archived"></div>
+        <div class="tile archived"></div><div class="tile archived"></div><div class="tile archived"></div>
+        <div class="tile archived"></div><div class="tile archived"></div><div class="tile archived"></div>
+        <div class="tile archived"></div>
+      </div>
+
+      <div class="archive-action">
+        <button class="btn-unarchive">↺ вернуть из архива</button>
+      </div>
+
+    </main>
+
+    <!-- правая колонка — пусто, чтобы дышало -->
+    <aside class="review-frag" style="background:transparent; border:1px dashed var(--border);">
+      <div class="frag-head" style="border:none;">
+        <div class="frag-head-eyebrow">после действия</div>
+        <div class="frag-head-title" style="font-size:.9rem; color: var(--text-dim); font-style:normal;">
+          • штамп виден всегда<br>
+          • статус карточки в списке меняется на «архив»<br>
+          • никаких функциональных ограничений — всё ещё можно открыть и редактировать<br>
+          • кнопка «↺ вернуть из архива» снимает штамп
+        </div>
+      </div>
+    </aside>
+
+  </div>
+
+  <div class="demo-foot">
+    <b>«АРХИВ»</b> = миф уже опубликован · только визуальная отметка · ничего не блокируется
+  </div>
+
+</div>
+
+</body>
+</html>

@@ -20,4 +20,4 @@ if __name__ == "__main__":
     if not markdown.exists():
         print(f"❌ Файл не найден: {markdown}")
         sys.exit(1)
-    video_runner.run(markdown, scenes_filter=None, start_from=13, headless=False)
+    video_runner.run(markdown, scenes_filter=None, start_from=18, headless=False)

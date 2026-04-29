@@ -21,14 +21,22 @@ from __future__ import annotations
 
 import argparse
 import builtins
+import os
 import random
 import re
+import shutil
+import sqlite3
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+# Раньше использовался patchright (stealth-форк Playwright), но для CDP-attach
+# к user-launched Chrome stealth-патчи не нужны — Chrome запущен пользователем,
+# Playwright только подключается. Обычный playwright + CDP равноценен
+# patchright + CDP, зато работает в любом Python без доп. установки.
 from playwright.sync_api import Page, sync_playwright
 
 from flow_projects import resolve_flow_url
@@ -59,8 +67,266 @@ def print(*args, **kwargs):  # type: ignore[override]
 # ──────────────────────────────────────────────────────────────────
 
 PROFILE_DIR = Path(__file__).parent / ".browser_profile"
+PATCHRIGHT_PROFILE_DIR = Path(__file__).parent / ".patchright_profile"
 PROJECT_ROOT = Path(__file__).parent.parent
 CONTENT_ROOT = PROJECT_ROOT / "content"
+
+# Режим attach: скрипт подключается к уже запущенному Chrome через CDP.
+# Chrome должен быть запущен пользователем (через launch_chrome_debug.bat)
+# с флагом --remote-debugging-port=9222. Для Flow это твоя легитимная
+# сессия — `navigator.webdriver`=false, нет `--enable-automation`.
+CDP_URL = "http://127.0.0.1:9222"
+CDP_HOST = "127.0.0.1"
+CDP_PORT = 9222
+LAUNCH_CHROME_BAT = Path(__file__).parent / "launch_chrome_debug.bat"
+
+# Профиль debug-Chrome — должен совпадать с PROFILE в launch_chrome_debug.bat.
+# Чистится перед каждым запуском (если включён --clean-session), чтобы Flow
+# видел свежую сессию. Имя профиля настраивается env BOGI_CHROME_PROFILE —
+# при бане аккаунта меняем имя (BogiAiChromeDebug2/3/...) для чистого
+# fingerprint без следов старого аккаунта.
+CHROME_DEBUG_PROFILE = Path(os.environ.get("LOCALAPPDATA", "")) / os.environ.get(
+    "BOGI_CHROME_PROFILE", "BogiAiChromeDebug2"
+)
+
+
+def _cdp_reachable(timeout_sec: float = 1.5) -> bool:
+    """Быстрая проверка: слушает ли кто-то CDP-порт 9222."""
+    import socket  # noqa: PLC0415
+    try:
+        sock = socket.create_connection((CDP_HOST, CDP_PORT), timeout=timeout_sec)
+        sock.close()
+        return True
+    except Exception:
+        return False
+
+
+def kill_debug_chrome(wait_sec: int = 12) -> bool:
+    """Закрывает ТОЛЬКО Chrome, запущенный с --remote-debugging-port=9222.
+
+    Не трогает остальные окна Chrome пользователя — фильтр идёт по точной
+    подстроке в командной строке процесса. После убийства ждёт пока порт
+    9222 освободится (иначе ensure_debug_chrome решит, что Chrome ещё жив).
+    """
+    if not _cdp_reachable():
+        return True  # уже мёртв — чисто
+
+    if sys.platform != "win32":
+        print("  ⚠ kill_debug_chrome поддерживает только Windows")
+        return False
+
+    print(f"  🪦 Закрываю Chrome с debug-портом {CDP_PORT}…")
+    ps_cmd = (
+        "Get-CimInstance Win32_Process -Filter \"Name = 'chrome.exe'\" "
+        "| Where-Object { $_.CommandLine -like '*remote-debugging-port=" + str(CDP_PORT) + "*' } "
+        "| ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+    )
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_cmd],
+            capture_output=True, timeout=20,
+        )
+    except Exception as e:
+        print(f"  ⚠ powershell завершился ошибкой: {e}")
+
+    # Ждём освобождения порта
+    for _ in range(wait_sec * 2):
+        if not _cdp_reachable():
+            return True
+        time.sleep(0.5)
+    print(f"  ⚠ Порт {CDP_PORT} ещё отвечает спустя {wait_sec}с — Chrome не закрылся")
+    return False
+
+
+def clean_flow_session() -> None:
+    """Чистит google-куки и storage в debug-профиле перед каждым запуском.
+
+    Зачем: Google Flow по сумме (cookies + LocalStorage + IndexedDB +
+    Cache + ServiceWorker) выставляет «trust score» сессии. Когда score
+    падает — выскакивает «We noticed unusual activity», и дальше идти
+    бесполезно. Полная чистка между прогонами возвращает фингерпринт в
+    «как первый заход с этого устройства» состояние.
+
+    Что делает:
+      1. Закрывает Chrome 9222 (если запущен) — иначе файлы залочены.
+      2. Удаляет из Network/Cookies все строки с google-доменами.
+      3. Сносит Local Storage / Session Storage / Cache / Code Cache /
+         GPUCache / Service Worker — целиком (профиль используется только
+         для labs.google, ничего ценного там нет).
+      4. Удаляет IndexedDB-папки labs.google.
+
+    Не трогает: bookmarks, расширения, fingerprint железа, Login Data,
+    Preferences. Только сессионное состояние Google.
+    """
+    profile = CHROME_DEBUG_PROFILE
+    if not profile.exists():
+        # Первый запуск — чистить нечего, ensure_debug_chrome создаст профиль.
+        return
+
+    print("\n🧹 Чищу профиль Chrome перед запуском (cookies + storage + cache)…")
+
+    # 1. Закрыть Chrome — иначе SQLite/LevelDB файлы залочены
+    if not kill_debug_chrome():
+        print("  ⚠ Продолжаю несмотря на не-закрытый Chrome — чистка может частично провалиться")
+
+    default = profile / "Default"
+
+    # 2. Cookies (SQLite в новой раскладке Chrome — Default/Network/Cookies)
+    cookies = default / "Network" / "Cookies"
+    if cookies.exists():
+        try:
+            db = sqlite3.connect(str(cookies))
+            cur = db.cursor()
+            cur.execute(
+                "DELETE FROM cookies WHERE host_key LIKE '%google%' "
+                "OR host_key LIKE '%.google.%' OR host_key LIKE '%gstatic%' "
+                "OR host_key LIKE '%youtube%'"
+            )
+            removed = cur.rowcount
+            db.commit()
+            db.close()
+            print(f"  🍪 Удалено google-куков: {removed}")
+        except Exception as e:
+            print(f"  ⚠ Cookies: {e}")
+
+    # 3. Storage и кеш — рекурсивные удаления (Chrome пересоздаст пустые)
+    storage_targets = [
+        ("Local Storage",   default / "Local Storage"),
+        ("Session Storage", default / "Session Storage"),
+        ("Cache",           default / "Cache"),
+        ("Code Cache",      default / "Code Cache"),
+        ("GPUCache",        default / "GPUCache"),
+        ("Service Worker",  default / "Service Worker"),
+    ]
+    for label, path in storage_targets:
+        if path.exists():
+            try:
+                shutil.rmtree(path)
+                print(f"  🧹 {label}: снесено")
+            except Exception as e:
+                print(f"  ⚠ {label}: {e}")
+
+    # 4. IndexedDB — только labs.google (остальные сайты не трогаем,
+    # их там и так не должно быть в этом профиле, но подстрахуемся)
+    idb = default / "IndexedDB"
+    if idb.exists():
+        for sub in idb.iterdir():
+            if sub.is_dir() and "labs.google" in sub.name.lower():
+                try:
+                    shutil.rmtree(sub)
+                    print(f"  🧹 IndexedDB/{sub.name}: снесено")
+                except Exception as e:
+                    print(f"  ⚠ IndexedDB/{sub.name}: {e}")
+
+    print("✓ Профиль очищен — нужно будет залогиниться в Google заново\n")
+
+
+def ensure_debug_chrome(max_wait_sec: int = 60) -> bool:
+    """Убеждается, что debug-Chrome запущен. Если нет — поднимает .bat и ждёт.
+
+    Возвращает True если CDP-порт начал отвечать, False если за отведённое
+    время не стартанул. Функция продублирована из imagefx_runner — идея
+    одинаковая: single-click UX, пользователь жмёт кнопку «запустить видео»,
+    всё поднимается само.
+    """
+    import subprocess as _sp  # noqa: PLC0415
+    if _cdp_reachable():
+        print(f"✓ Chrome с debug-портом {CDP_PORT} уже запущен")
+        return True
+    if not LAUNCH_CHROME_BAT.exists():
+        print(f"❌ Не найден {LAUNCH_CHROME_BAT}")
+        return False
+    print(f"🚀 Chrome-debug не запущен — поднимаю {LAUNCH_CHROME_BAT.name}")
+    flags = _sp.CREATE_NEW_CONSOLE if hasattr(_sp, "CREATE_NEW_CONSOLE") else 0
+    try:
+        _sp.Popen(
+            [str(LAUNCH_CHROME_BAT)],
+            cwd=str(LAUNCH_CHROME_BAT.parent),
+            creationflags=flags,
+        )
+    except Exception as e:
+        print(f"❌ Не удалось запустить bat: {e}")
+        return False
+    print(f"⏳ Жду открытия порта {CDP_PORT} (до {max_wait_sec} сек)…")
+    for i in range(max_wait_sec):
+        if _cdp_reachable():
+            print(f"✓ CDP-порт ответил через {i+1}с — жду 2 сек на прогрев UI")
+            time.sleep(2)
+            return True
+        time.sleep(1)
+    print(f"❌ За {max_wait_sec}с Chrome не открыл CDP-порт")
+    return False
+
+
+def find_flow_page(context) -> Page | None:
+    """Находит открытую вкладку с Flow-проектом среди всех вкладок контекста."""
+    for pg in context.pages:
+        try:
+            if pg.is_closed():
+                continue
+            if "flow/project" in pg.url:
+                return pg
+        except Exception:
+            continue
+    return None
+
+
+def attach_and_find(p, verbose: bool = True) -> tuple[object, Page] | tuple[None, None]:
+    """Подключается к Chrome по CDP и находит вкладку Flow.
+
+    Возвращает (browser, page) или (None, None) при неудаче.
+    """
+    try:
+        browser = p.chromium.connect_over_cdp(CDP_URL, timeout=5_000)
+    except Exception as e:
+        if verbose:
+            print(f"  ⚠ Не подключиться к Chrome на {CDP_URL}: {e}")
+        return None, None
+
+    if not browser.contexts:
+        if verbose:
+            print("  ⚠ В Chrome нет открытых контекстов")
+        return None, None
+
+    for ctx in browser.contexts:
+        pg = find_flow_page(ctx)
+        if pg is not None:
+            return browser, pg
+
+    if verbose:
+        print("  ⚠ Не нашёл вкладку Flow ни в одном контексте")
+    return None, None
+
+
+def ensure_page_alive(p, page: Page | None) -> Page | None:
+    """Проверяет что вкладка Flow жива, при необходимости переподключается."""
+    # Быстрая проверка текущего page
+    if page is not None:
+        try:
+            if not page.is_closed():
+                # Доп. проверка через evaluate — page может считаться открытым,
+                # но DevTools-сессия уже порвана (Chrome сам перезагрузил вкладку).
+                page.evaluate("() => 1")
+                return page
+        except Exception:
+            pass
+
+    # page мёртв — пробуем переподключиться
+    print("  🔄 Вкладка Flow потеряна, переподключаюсь через CDP...")
+    _, new_page = attach_and_find(p, verbose=False)
+    if new_page is not None:
+        new_page.bring_to_front()
+        print(f"  ✓ Переподключился: {new_page.url[:80]}...")
+        return new_page
+
+    # Не смогли найти — просим пользователя
+    print("\n  ❌ Flow-проект закрыт. Открой его в Chrome и жми Enter.")
+    input("     ")
+    _, new_page = attach_and_find(p)
+    if new_page is not None:
+        new_page.bring_to_front()
+        return new_page
+    return None
 
 # Папки, которые не могут быть именем сценария (служебные)
 _NON_SCENARIO_FOLDERS = {
@@ -237,6 +503,80 @@ def idle_like_human(page: Page, seconds: float):
             elapsed += random.uniform(0.5, 1.5)
 
 
+def human_click(page: Page, locator, *, padding: float = 0.2):
+    """Кликает по элементу с человекоподобной траекторией мыши.
+
+    Стандартный locator.click() бьёт ровно в boundingBox.center — это
+    bot-сигнал, у людей попадание гуляет внутри элемента. Здесь:
+      1. Берём bounding_box, выбираем случайную точку в центральной
+         части (padding от краёв), чтобы не промахнуться по элементу
+      2. Двигаем мышь к этой точке через серию шагов
+      3. Кликаем по координатам, а не по селектору
+
+    padding — доля от ширины/высоты с каждого края, в которую НЕ целимся
+    (по умолчанию 20%, попадаем в центральные 60%).
+    """
+    box = locator.bounding_box()
+    if not box or box["width"] < 4 or box["height"] < 4:
+        # Деградируем до обычного клика — лучше так, чем падать
+        locator.click()
+        return
+    x_lo = box["x"] + box["width"] * padding
+    x_hi = box["x"] + box["width"] * (1.0 - padding)
+    y_lo = box["y"] + box["height"] * padding
+    y_hi = box["y"] + box["height"] * (1.0 - padding)
+    target_x = random.uniform(x_lo, x_hi)
+    target_y = random.uniform(y_lo, y_hi)
+    try:
+        page.mouse.move(target_x, target_y, steps=random.randint(20, 40))
+    except Exception:
+        pass
+    time.sleep(random.uniform(0.08, 0.22))
+    page.mouse.click(target_x, target_y)
+
+
+def _clear_prompt_field(page: Page):
+    """Очистка поля одним из трёх способов — варьируем, чтобы не было
+    одинаковой Ctrl+A → Delete каждый раз. Реальные люди очищают
+    по-разному."""
+    method = random.choice(["select_all", "end_shift_home", "ctrl_backspace"])
+    if method == "select_all":
+        page.keyboard.press("Control+A")
+        time.sleep(random.uniform(0.20, 0.45))
+        page.keyboard.press(random.choice(["Delete", "Backspace"]))
+    elif method == "end_shift_home":
+        page.keyboard.press("End")
+        time.sleep(random.uniform(0.10, 0.25))
+        page.keyboard.press("Shift+Home")
+        time.sleep(random.uniform(0.18, 0.40))
+        page.keyboard.press("Backspace")
+    else:  # ctrl_backspace — несколько раз стираем по слову
+        for _ in range(random.randint(8, 14)):
+            page.keyboard.press("Control+Backspace")
+            time.sleep(random.uniform(0.04, 0.12))
+        page.keyboard.press("Control+A")
+        time.sleep(random.uniform(0.10, 0.20))
+        page.keyboard.press("Delete")
+    time.sleep(random.uniform(0.4, 0.8))
+
+
+def look_at_results(page: Page):
+    """После генерации — «посмотреть на результат»: скролл вниз, пауза,
+    лёгкое движение мыши над галереей, скролл назад. Боты сразу пишут
+    следующий промпт; люди разглядывают то, что получилось."""
+    try:
+        page.mouse.wheel(0, random.randint(180, 420))
+    except Exception:
+        return
+    time.sleep(random.uniform(2.0, 4.5))
+    random_mouse_wander(page, intensity="normal")
+    try:
+        page.mouse.wheel(0, -random.randint(120, 320))
+    except Exception:
+        pass
+    time.sleep(random.uniform(1.5, 3.5))
+
+
 GALLERY_IMG_SELECTOR = 'img[alt="Сгенерированное изображение"]'
 # Слот «Первый кадр» — div 50x50 cursor:pointer в видео-панели
 FIRST_FRAME_SLOT_TEXT = "Первый кадр"
@@ -273,6 +613,37 @@ def pause_for_abuse_resolution(context: str = ""):
     input("\n     Жду разблокировки → Enter... ")
     # Дать странице стабилизироваться после разблокировки
     time.sleep(random.uniform(2, 4))
+
+
+# ── Детект rate-limit тоста («Вы слишком быстро отправляете запросы») ──────
+#
+# Это другой сигнал, чем abuse-диалог: тост появляется на 5-7 сек в
+# нижнем-левом углу и сам исчезает. Если его не поймать — раннер
+# простоит весь wait_for_video_generation таймаут впустую.
+
+RATE_LIMIT_MARKERS = [
+    "слишком быстро",
+    "повторите попытку через",
+    "too many requests",
+    "try again in a few",
+    "rate limit",
+]
+
+
+def detect_rate_limit_toast(page: Page) -> bool:
+    """Ищет в DOM транзиентный тост «слишком быстро отправляете»."""
+    try:
+        return bool(page.evaluate(
+            """
+            (markers) => {
+                const text = (document.body.innerText || '').toLowerCase();
+                return markers.some(m => text.includes(m));
+            }
+            """,
+            RATE_LIMIT_MARKERS,
+        ))
+    except Exception:
+        return False
 
 
 # ── Perceptual hash (pHash) для автовыбора картинки из пикера ───────────────
@@ -679,59 +1050,49 @@ def select_from_picker_by_image(page: Page, approved_path: Path) -> bool:
 
 
 def fill_prompt(page: Page, prompt: str):
-    """Печатает промпт посимвольно как человек.
+    """Живой ввод промпта — тот же паттерн, что в imagefx_runner.
 
-    Paste через буфер — один из сильных bot-сигналов Google. Поэтому печатаем
-    буквами с вариативным темпом, с редкими паузами «на подумать» на знаках
-    препинания. Для ~400 символов это займёт 30-60 сек — как раз нормальная
-    скорость печати.
+    Paste через буфер — один из явных bot-сигналов Google. Печатаем
+    посимвольно с вариативным ритмом 25-65 симв/сек, кликаем по полю
+    с человекоподобной траекторией мыши, очищаем одним из трёх
+    случайных способов.
     """
     field = page.locator(PROMPT_SELECTOR).first
     field.wait_for(state="visible", timeout=10_000)
 
     random_mouse_wander(page, intensity="light")
-    field.click()
+    human_click(page, field)
     time.sleep(random.uniform(0.6, 1.3))
 
-    page.keyboard.press("Control+A")
-    time.sleep(random.uniform(0.25, 0.5))
-    page.keyboard.press("Delete")
-    time.sleep(random.uniform(0.4, 0.8))
+    _clear_prompt_field(page)
 
     print(f"  ⌨  Печатаю промпт ({len(prompt)} симв.)...")
     human_type_prompt(page, prompt)
 
-    # Короткая пауза после печати — «ещё раз взглянул перед отправкой»
+    # Короткая пауза «перед отправкой — ещё раз взглянул»
     time.sleep(random.uniform(1.5, 3.5))
 
 
 def human_type_prompt(page: Page, text: str):
-    """Посимвольная печать с человеческим ритмом.
+    """Быстрая посимвольная печать с лёгкой рандомизацией ритма.
 
-    Базовая скорость 0.04-0.11 сек/символ (≈ 90-180 симв/мин, комфортный темп).
-    После знаков препинания — микро-пауза. Изредка (5%) «задумываемся» на
-    0.5-2 сек, имитируя паузу перед трудным словом.
+    Google Flow палит clipboard-paste (Ctrl+V) как bot-сигнал, поэтому
+    paste отброшен. Опечатки + Backspace, «персонаж сессии» и
+    «усталость» убраны — на abuse-детектор Flow они не повлияли.
+
+    Базовый темп ~25-65 симв/сек (быстрый, но не моментальный). Редкие
+    короткие паузы на пунктуации остаются — без них вообще линия,
+    поэтому смысла их убирать нет, времени почти не отъедают.
     """
-    for i, ch in enumerate(text):
+    for ch in text:
         page.keyboard.type(ch)
-
-        # Редкая долгая пауза — как будто задумались
-        if random.random() < 0.03 and i > 20:
-            time.sleep(random.uniform(0.5, 2.0))
+        # Короткая пауза после знака препинания — встречается редко в
+        # промптах, общую длительность почти не двигает.
+        if ch in ".,;!?" and random.random() < 0.5:
+            time.sleep(random.uniform(0.05, 0.18))
             continue
-
-        # Пауза после знака препинания
-        if ch in ".,;!?" and random.random() < 0.7:
-            time.sleep(random.uniform(0.15, 0.5))
-            continue
-
-        # Пауза после пробела (конец слова) — иногда
-        if ch == " " and random.random() < 0.18:
-            time.sleep(random.uniform(0.12, 0.35))
-            continue
-
-        # Обычный ритм печати
-        time.sleep(random.uniform(0.04, 0.11))
+        # Базовый ритм 0.015-0.040 сек/симв (~25-65 симв/сек)
+        time.sleep(random.uniform(0.015, 0.040))
 
 
 def click_generate(page: Page):
@@ -741,11 +1102,137 @@ def click_generate(page: Page):
         if btn.is_enabled():
             break
         time.sleep(0.3)
-    # Более естественный заход на кнопку: пара движений, небольшая пауза
-    # (как будто пользователь ещё раз взглянул на промпт), потом клик.
+    # Перед кликом — лёгкое движение мыши и пауза «на подумать»
     random_mouse_wander(page, intensity="normal")
     time.sleep(random.uniform(0.6, 1.4))
-    btn.click()
+    human_click(page, btn)
+
+
+def click_generate_with_rate_limit_retry(page: Page, state: dict, max_retries: int = 3) -> bool:
+    """Кликает «Создать» с авто-retry при rate-limit тосте.
+
+    Алгоритм:
+      1. click_generate → ждём 2 сек, проверяем тост
+      2. Если тост есть — фиксируем rate_limit_count, ждём 60-120 сек × attempt
+         (прогрессивный backoff), проверяем что тост ушёл, повторяем клик
+      3. После max_retries возвращаем False — вызывающий пропускает сцену
+
+    Returns:
+        True если генерация запустилась чисто, False если retry исчерпан.
+    """
+    for attempt in range(1, max_retries + 1):
+        click_generate(page)
+        # Тост появляется в течение 1-2 сек после клика
+        time.sleep(2.0)
+        if not detect_rate_limit_toast(page):
+            return True
+
+        state["rate_limit_count"] = state.get("rate_limit_count", 0) + 1
+        if attempt >= max_retries:
+            print(f"  ⚠ Rate-limit не ушёл после {max_retries} попыток — пропускаю сцену.")
+            return False
+
+        # Прогрессивный backoff: 60-120, 120-240, 180-360 сек.
+        # Veo и так медленный, дополнительная минута-две не критична.
+        cooldown = random.uniform(60, 120) * attempt
+        print(f"  ⏳ Rate-limit (попытка {attempt}/{max_retries}): пауза {int(cooldown)} сек перед retry…")
+        deadline = time.time() + cooldown
+        while time.time() < deadline:
+            time.sleep(min(5.0, deadline - time.time()))
+        # Дожидаемся пока тост точно исчез — иначе следующий клик
+        # может попасть на ещё видимый toast и быть проигнорирован Flow.
+        for _ in range(15):
+            if not detect_rate_limit_toast(page):
+                break
+            time.sleep(2.0)
+    return False
+
+
+def snapshot_video_ids(page: Page) -> list[str]:
+    """Снимок «какие видео сейчас есть в галерее».
+
+    Признак каждого видео — src <video> + его позиция. Пока видео не
+    перемешиваются внутри сессии, эти id стабильны. Используем для того,
+    чтобы потом отличить «наше» новое видео от других, которые могли
+    появиться параллельно (например, если пользователь сам генерирует).
+    """
+    return page.evaluate(
+        """
+        () => {
+            const out = [];
+            document.querySelectorAll('div[role="button"][tabindex="0"]').forEach(item => {
+                const rect = item.getBoundingClientRect();
+                if (rect.width < 80 || rect.height < 80 || rect.y < 0) return;
+                let hasPlay = false;
+                item.querySelectorAll('i, span').forEach(icon => {
+                    const t = (icon.textContent || '').trim().toLowerCase();
+                    if (t.includes('play_arrow') || t.includes('play_circle')) hasPlay = true;
+                });
+                if (!hasPlay) hasPlay = !!item.querySelector('video');
+                if (!hasPlay) return;
+                const vid = item.querySelector('video');
+                const src = vid ? vid.src : '';
+                out.push(src + '|' + Math.round(rect.x) + ',' + Math.round(rect.y)
+                         + ',' + Math.round(rect.width) + 'x' + Math.round(rect.height));
+            });
+            return out;
+        }
+        """
+    )
+
+
+def open_specific_video(page: Page, before_ids: list[str]) -> bool:
+    """Находит и кликает на НОВОЕ видео, появившееся после последнего снимка.
+
+    Работает даже если параллельно появились другие видео — ищет ровно те,
+    которых не было в `before_ids`. Если новых несколько — берёт первое
+    (то которое сверху = обычно самое свежее).
+    """
+    new_coords = page.evaluate(
+        """
+        (beforeList) => {
+            const before = new Set(beforeList);
+            const items = document.querySelectorAll('div[role="button"][tabindex="0"]');
+            for (const item of items) {
+                const rect = item.getBoundingClientRect();
+                if (rect.width < 80 || rect.height < 80 || rect.y < 0) continue;
+                let hasPlay = false;
+                item.querySelectorAll('i, span').forEach(icon => {
+                    const t = (icon.textContent || '').trim().toLowerCase();
+                    if (t.includes('play_arrow') || t.includes('play_circle')) hasPlay = true;
+                });
+                if (!hasPlay) hasPlay = !!item.querySelector('video');
+                if (!hasPlay) continue;
+                const vid = item.querySelector('video');
+                const src = vid ? vid.src : '';
+                const id = src + '|' + Math.round(rect.x) + ',' + Math.round(rect.y)
+                           + ',' + Math.round(rect.width) + 'x' + Math.round(rect.height);
+                if (!before.has(id)) {
+                    return {
+                        x: Math.round(rect.x + rect.width / 2),
+                        y: Math.round(rect.y + rect.height / 2),
+                        w: Math.round(rect.width),
+                        h: Math.round(rect.height),
+                    };
+                }
+            }
+            return null;
+        }
+        """,
+        before_ids,
+    )
+
+    if new_coords:
+        print(f"  📹 Нашёл НОВОЕ видео ({new_coords['w']}x{new_coords['h']})")
+        page.mouse.click(new_coords["x"], new_coords["y"])
+        human_sleep(2.0, 3.0)
+        dl_btn = page.locator('button:has-text("Скачать")')
+        if dl_btn.count() > 0 and dl_btn.first.is_visible():
+            print("  ✓ Превью видео открыто")
+            return True
+
+    print("  ⚠ Не нашёл новое видео — пробую запасной вариант (первое в галерее)")
+    return open_generated_video(page)
 
 
 def open_generated_video(page: Page) -> bool:
@@ -802,17 +1289,26 @@ def open_generated_video(page: Page) -> bool:
     return False
 
 
-DOWNLOAD_TIMEOUT_MS = 240_000  # 4 минуты — 1080p видео могут быть 30+ МБ
+# Качество скачиваемого видео из Flow. У Veo 3.1 в меню «Скачать» доступны
+# «720p» и «1080p». Контент канала — пиксель-арт, у которого нет высоко-
+# частотных деталей, на которых 1080p выигрывает; YouTube Shorts/TikTok
+# всё равно ререндерят клип в свой кодек. 720p в ~2× легче по весу,
+# скачивается заметно быстрее, экономит диск и трафик. Дефолт — 720p,
+# через --quality 1080p можно поднять для архива/мастера.
+DOWNLOAD_QUALITY = "720p"
+DOWNLOAD_TIMEOUT_MS = 240_000  # 4 минуты — даже 720p может качаться долго при медленном Flow
+
+QUALITY_CHOICES = ("720p", "1080p")
 
 
 def _do_download_flow(page: Page, output_dir: Path, scene_index: int,
                       attempt_label: str = "") -> bool:
-    """Однократная попытка скачать текущее видео через UI: Скачать → 1080p.
+    """Однократная попытка скачать текущее видео через UI: Скачать → {DOWNLOAD_QUALITY}.
 
     Ключевые моменты:
     - ждём что меню качеств ДЕЙСТВИТЕЛЬНО появилось после клика «Скачать»
-    - таймаут скачивания 4 мин (большие 1080p видео качаются не мгновенно)
-    - перед кликом на 1080p убеждаемся что элемент видим и enabled
+    - таймаут скачивания 4 мин (на медленном Flow даже 720p качается не мгновенно)
+    - перед кликом на пункт качества убеждаемся что элемент видим и enabled
     """
     label = f" [{attempt_label}]" if attempt_label else ""
 
@@ -826,9 +1322,9 @@ def _do_download_flow(page: Page, output_dir: Path, scene_index: int,
         print(f"  ⚠ Кнопка «Скачать» не найдена: {e}")
         return False
 
-    # Ждём, пока реально появится элемент «1080p» (меню качеств открылось).
-    # Если меню не развернулось — клик на текст «1080p» уйдёт в никуда.
-    q_btn = page.get_by_text("1080p")
+    # Ждём, пока реально появится пункт {DOWNLOAD_QUALITY} (меню качеств открылось).
+    # Если меню не развернулось — клик на текст уйдёт в никуда.
+    q_btn = page.get_by_text(DOWNLOAD_QUALITY)
     try:
         q_btn.first.wait_for(state="visible", timeout=10_000)
     except Exception:
@@ -845,20 +1341,21 @@ def _do_download_flow(page: Page, output_dir: Path, scene_index: int,
     try:
         with page.expect_download(timeout=DOWNLOAD_TIMEOUT_MS) as download_info:
             q_btn.first.click()
-            print(f"  ↳ Кликнул «1080p», жду скачивания (до {DOWNLOAD_TIMEOUT_MS // 60_000} мин)...")
+            print(f"  ↳ Кликнул «{DOWNLOAD_QUALITY}», жду скачивания (до {DOWNLOAD_TIMEOUT_MS // 60_000} мин)...")
 
         download = download_info.value
         out_path = output_dir / f"scene_{scene_index:02d}_v1.mp4"
         download.save_as(str(out_path))
         size_mb = out_path.stat().st_size / (1024 * 1024)
-        print(f"  ✓ Скачано{label}: {out_path.name} ({size_mb:.1f} МБ)")
+        print(f"  ✓ Скачано{label}: {out_path.name} ({size_mb:.1f} МБ, {DOWNLOAD_QUALITY})")
         return True
     except Exception as e:
         print(f"  ⚠ Ошибка скачивания{label}: {e}")
         return False
 
 
-def download_video_via_ui(page: Page, output_dir: Path, scene_index: int) -> bool:
+def download_video_via_ui(page: Page, output_dir: Path, scene_index: int,
+                          state: dict | None = None) -> bool:
     """Скачивает видео из открытого превью с retry и обнаружением блокировок."""
 
     # Первая попытка
@@ -887,6 +1384,8 @@ def download_video_via_ui(page: Page, output_dir: Path, scene_index: int) -> boo
 
     # Проверяем abuse-диалог
     if detect_abuse_dialog(page):
+        if state is not None:
+            state["abuse_count"] = state.get("abuse_count", 0) + 1
         pause_for_abuse_resolution(context=f"при скачивании сцены {scene_index}")
         time.sleep(random.uniform(1.5, 3.0))
         # Повтор после разблокировки
@@ -1002,7 +1501,7 @@ def go_back_to_gallery(page: Page):
 
 
 def generate_video_scene(page: Page, scene: VideoScene, output_dir: Path,
-                         approved_map: dict[int, Path],
+                         approved_map: dict[int, Path], state: dict,
                          first_scene: bool = False):
     full_prompt = build_full_prompt(scene)
 
@@ -1021,6 +1520,7 @@ def generate_video_scene(page: Page, scene: VideoScene, output_dir: Path,
 
     # Превентивная проверка: не висит ли abuse-диалог от прошлых шагов?
     if detect_abuse_dialog(page):
+        state["abuse_count"] = state.get("abuse_count", 0) + 1
         pause_for_abuse_resolution(context=f"перед сценой {scene.index}")
 
     # ШАГ 1: собираем URL изображений из галереи (до открытия пикера)
@@ -1069,13 +1569,21 @@ def generate_video_scene(page: Page, scene: VideoScene, output_dir: Path,
         print(f"\n  👆 Убедись что выбрана модель Veo 3.1 и формат 9:16.")
         input("     Нажми Enter когда готово... ")
 
-    # Считаем видео ДО генерации
-    videos_before = count_video_items(page)
+    # Снимок видео ДО генерации — чтобы потом точно найти НАШЕ новое,
+    # даже если параллельно появятся другие (напр., если пользователь
+    # тоже что-то генерирует вручную в этой же вкладке).
+    videos_before_ids = snapshot_video_ids(page)
+    videos_before = len(videos_before_ids)
     print(f"  📊 Видео в галерее до генерации: {videos_before}")
 
-    # Заполняем промпт и запускаем генерацию
+    # Заполняем промпт и запускаем генерацию.
+    # click_generate_with_rate_limit_retry ловит транзиентный тост
+    # «Вы слишком быстро отправляете запросы» и автоматически повторяет
+    # клик после прогрессивного backoff. Если retry исчерпан — пропуск.
     fill_prompt(page, full_prompt)
-    click_generate(page)
+    if not click_generate_with_rate_limit_retry(page, state):
+        print(f"  ⏭  Сцена {scene.index} пропущена из-за rate-limit.")
+        return
 
     print(f"  ⏳ Генерируется видео... (автоматически жду появления)")
 
@@ -1085,15 +1593,15 @@ def generate_video_scene(page: Page, scene: VideoScene, output_dir: Path,
         print(f"  ⚠ Видео не появилось автоматически.")
         input("     Когда видео появилось — нажми Enter... ")
 
-    # Кликаем на видео → открываем превью
+    # Кликаем на НАШЕ новое видео (которого не было в snapshot)
     human_sleep(1.0, 2.0)
-    opened = open_generated_video(page)
+    opened = open_specific_video(page, videos_before_ids)
     if not opened:
         print(f"  👆 Кликни на сгенерированное видео вручную.")
         input("     Когда превью открыто (видишь кнопку «Скачать») — нажми Enter... ")
 
-    # Скачиваем: Скачать → 1080p
-    success = download_video_via_ui(page, output_dir, scene.index)
+    # Скачиваем: Скачать → {DOWNLOAD_QUALITY} (по умолчанию 720p, см. константу выше)
+    success = download_video_via_ui(page, output_dir, scene.index, state=state)
     if not success:
         print(f"  ⚠ Скачай видео сцены {scene.index} вручную в {output_dir}")
         input("     Нажми Enter когда скачал... ")
@@ -1102,7 +1610,17 @@ def generate_video_scene(page: Page, scene: VideoScene, output_dir: Path,
     go_back_to_gallery(page)
 
 
-def run(markdown_path: Path, scenes_filter: set[int] | None, start_from: int, headless: bool = False):
+def run(markdown_path: Path, scenes_filter: set[int] | None, start_from: int, headless: bool = False, clean_session: bool = False, quality: str = "720p"):
+    # quality пишем в модульную глобал, чтобы _do_download_flow читал актуальное
+    # значение (он использует DOWNLOAD_QUALITY как module-level константу).
+    if quality not in QUALITY_CHOICES:
+        print(f"⚠ Неизвестное качество {quality!r}, использую 720p")
+        quality = "720p"
+    globals()["DOWNLOAD_QUALITY"] = quality
+    print(f"🎞  Качество скачивания: {quality}")
+    # `headless` оставлен в сигнатуре для обратной совместимости с лаунчерами;
+    # в attach-режиме мы не запускаем браузер сами, поэтому флаг не используется.
+    del headless
     title, scenes = parse_video_markdown(markdown_path)
 
     if scenes_filter:
@@ -1133,48 +1651,68 @@ def run(markdown_path: Path, scenes_filter: set[int] | None, start_from: int, he
 
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Per-run state. Сейчас используется только для счётчика abuse-хитов:
+    # после первого срабатывания «unusual activity» все паузы между сценами
+    # удваиваются — единственный честный сигнал «я человек» в этом режиме
+    # резко снизить cadence до конца прогона.
+    state: dict = {"abuse_count": 0}
+
+    # Чистка сессии перед прогоном: закрывает Chrome 9222 (если запущен),
+    # сносит google-куки, Local/Session Storage, Cache, IndexedDB labs.google.
+    # Даёт Flow «как первый заход» trust-score, что эмпирически снимает
+    # «We noticed unusual activity». Цена — придётся залогиниться в Google
+    # заново. По умолчанию выключено, включается флагом из вебаппа.
+    if clean_session:
+        clean_flow_session()
+    else:
+        print("ℹ Чистка сессии отключена — использую существующие cookies/storage Chrome")
+
     with sync_playwright() as p:
-        # channel="chrome" — используем установленный Google Chrome вместо
-        # Playwright-Chromium "for testing" (он валится с STATUS_BREAKPOINT
-        # при старте). То же самое делает imagefx_runner, и профиль общий —
-        # пользователь уже залогинен в Google/Flow.
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(PROFILE_DIR),
-            channel="chrome",
-            headless=headless,
-            accept_downloads=True,
-            viewport={"width": 1400, "height": 900},
-            locale="ru-RU",
-            timezone_id="Europe/Moscow",
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--disable-features=IsolateOrigins,site-per-process",
-            ],
-        )
-        context.add_init_script(STEALTH_INIT_SCRIPT)
+        # Attach-режим: подключаемся к Chrome который пользователь запустил
+        # сам через launch_chrome_debug.bat. Chrome user-launched — значит
+        # navigator.webdriver=false, нет --enable-automation, чистый
+        # fingerprint. Скрипт не управляет запуском браузера, только
+        # действиями внутри него.
+        #
+        # Если Chrome-debug ещё не поднят — сами запустим launch_chrome_debug.bat
+        # и подождём CDP-порта. Single-click UX такой же как у imagefx.
+        if not ensure_debug_chrome(max_wait_sec=60):
+            print("\n❌ Chrome-debug не стартовал за 60 сек.")
+            print("   Попробуй запустить automation/launch_chrome_debug.bat вручную.")
+            sys.exit(1)
 
-        # Разрешаем clipboard read/write для labs.google — нужно для
-        # мгновенной вставки промпта через navigator.clipboard.writeText.
-        try:
-            context.grant_permissions(
-                ["clipboard-read", "clipboard-write"],
-                origin="https://labs.google",
-            )
-        except Exception as e:
-            print(f"  ⚠ Не удалось выдать clipboard-права: {e}")
+        browser, page = None, None
+        for attempt in range(10):
+            browser, page = attach_and_find(p, verbose=False)
+            if browser is not None:
+                break
+            time.sleep(1)
 
-        page = context.pages[0] if context.pages else context.new_page()
+        if page is None:
+            print(f"\n❌ Не удалось найти вкладку Flow после CDP-attach.")
+            print("\n🛠  Залогинься в Google в открывшемся Chrome и открой Flow-проект:")
+            print(f"      {flow_url}")
+            print("   Потом запусти скрипт ещё раз.\n")
+            sys.exit(1)
+        # После успешного attach flow_url больше не используется —
+        # скрипт работает с той вкладкой которая уже открыта.
+        del flow_url
 
-        print("\n🌐 Открываю Flow-проект")
-        page.goto(flow_url, timeout=PAGE_LOAD_TIMEOUT, wait_until="domcontentloaded")
+        print(f"🔗 Подключён к Chrome, вкладка Flow найдена:")
+        print(f"   {page.url[:80]}...")
+        page.bring_to_front()
 
-        print("\n⏸  Дождись полной загрузки проекта.")
+        print("\n⏸  Убедись что проект полностью загрузился, галерея видна.")
         input("   Нажми Enter для старта... ")
 
-        # После Enter даём Flow 3 секунды на стабилизацию — если юзер нажал
-        # прям сразу после того как страница визуально открылась, там ещё
-        # могут идти XHR/hydration, и первая page.evaluate ловит
-        # "Execution context was destroyed".
+        # Сразу после Enter — на всякий случай убеждаемся что вкладка
+        # всё ещё жива (юзер мог что-то закрыть пока логинился/ждал).
+        page = ensure_page_alive(p, page)
+        if page is None:
+            print("❌ Не смог привязаться к вкладке Flow. Закрываю.")
+            sys.exit(1)
+
+        # Стабилизация после возможной навигации
         print("⏱  Жду 3 сек стабилизации страницы...")
         time.sleep(3)
         try:
@@ -1183,27 +1721,40 @@ def run(markdown_path: Path, scenes_filter: set[int] | None, start_from: int, he
             pass
 
         for i, scene in enumerate(scenes):
+            # Перед каждой сценой проверяем что вкладка жива.
+            # Flow может сам закрыть/перегрузить вкладку при abuse-лимите
+            # или при длинной неактивности — тогда переподключаемся.
+            page = ensure_page_alive(p, page)
+            if page is None:
+                print("❌ Flow-вкладка окончательно потеряна. Выход.")
+                break
+
             try:
                 generate_video_scene(page, scene, output_dir, approved_map,
-                                     first_scene=(i == 0))
+                                     state, first_scene=(i == 0))
             except Exception as e:
                 print(f"  ✗ Ошибка на сцене {scene.index}: {e}")
 
             if i < len(scenes) - 1:
-                # Кофе-брейк теперь каждые 3 сцены и куда длиннее — Google
-                # явно недовольна частой генерацией Veo 3.1.
-                if (i + 1) % 3 == 0:
-                    pause = random.uniform(300, 600)  # 5-10 мин
-                    mins = pause / 60
-                    print(f"  ☕ Кофе-брейк {mins:.1f} мин (каждые 3 сцены)...")
-                else:
-                    pause = random.uniform(90, 180)  # 1.5-3 мин
-                    print(f"  💤 Пауза {int(pause)} сек перед следующей сценой...")
+                # Между генерацией и паузой — «посмотреть, что получилось»
+                look_at_results(page)
+
+                # Обычная пауза 90-180 сек. После первого abuse-хита
+                # ИЛИ rate-limit-тоста всё удваиваем — Flow явно
+                # подозревает сессию, и единственный честный способ
+                # отбиться — резко снизить cadence.
+                bumped = state.get("abuse_count", 0) > 0 or state.get("rate_limit_count", 0) > 0
+                multiplier = 2.0 if bumped else 1.0
+                pause = random.uniform(90, 180) * multiplier
+                note = " (×2 после abuse/rate-limit)" if multiplier > 1 else ""
+                print(f"  💤 Пауза {int(pause)} сек перед следующей сценой{note}...")
                 idle_like_human(page, pause)
 
         print(f"\n✅ Готово. Видео в: {output_dir}")
-        input("Нажми Enter для закрытия браузера... ")
-        context.close()
+        # Не закрываем Chrome — это процесс пользователя, запущенный
+        # через launch_chrome_debug.bat. Пусть остаётся для следующего
+        # запуска (не надо заново логиниться).
+        print("   Chrome оставлен открытым — можно запустить скрипт снова.")
 
 
 def parse_scenes_arg(value: str) -> set[int]:
@@ -1216,6 +1767,17 @@ def main():
     parser.add_argument("--scenes", type=str, default=None, help="Номера сцен через запятую, напр. 1,2,3")
     parser.add_argument("--from", dest="start_from", type=int, default=0, help="Начать с сцены N")
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument(
+        "--clean-session",
+        action="store_true",
+        help="Очистить cookies/Local Storage/Cache Google перед запуском (придётся логиниться заново)",
+    )
+    parser.add_argument(
+        "--quality",
+        choices=QUALITY_CHOICES,
+        default="720p",
+        help="Качество скачиваемого mp4 из Flow (720p или 1080p, дефолт 720p)",
+    )
     args = parser.parse_args()
 
     if not args.markdown.exists():
@@ -1223,7 +1785,14 @@ def main():
         sys.exit(1)
 
     scenes_filter = parse_scenes_arg(args.scenes) if args.scenes else None
-    run(args.markdown, scenes_filter, args.start_from, headless=args.headless)
+    run(
+        args.markdown,
+        scenes_filter,
+        args.start_from,
+        headless=args.headless,
+        clean_session=args.clean_session,
+        quality=args.quality,
+    )
 
 
 if __name__ == "__main__":

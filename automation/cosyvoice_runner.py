@@ -11,7 +11,7 @@ Fun-CosyVoice3-0.5B с клонированием голоса (zero_shot реж
         --base sentence_003 \
         --text "Он передал его людям и всё изменилось." \
         --variants 10 \
-        --speed 1.1 \
+        --speed 1.0 \
         --prompt-wav "content/Ящик Пандоры/TTS.mp3" \
         --prompt-text "content/Ящик Пандоры/TTS.txt"
 
@@ -50,22 +50,14 @@ DEFAULT_PROMPT_WAV = CONTENT_DIR / "Ящик Пандоры" / "TTS.mp3"
 DEFAULT_PROMPT_TXT = CONTENT_DIR / "Ящик Пандоры" / "TTS.txt"
 
 DEFAULT_VARIANTS = 10
-DEFAULT_SPEED = 1.1
+DEFAULT_SPEED = 1.0
 
-# ffmpeg: сначала пробуем PATH, потом Remotion-бандл.
-_REMOTION_FFMPEG = (
-    REPO_ROOT / "remotion" / "node_modules" / "@remotion" /
-    "compositor-win32-x64-msvc" / "ffmpeg.exe"
-)
+# ffmpeg — берётся из системного PATH (на рабочей машине лежит в
+# external/ffmpeg/ffmpeg-8.1-full_build-shared/bin/ и добавлен в PATH).
 
 
 def find_ffmpeg() -> str | None:
-    which = shutil.which("ffmpeg")
-    if which:
-        return which
-    if _REMOTION_FFMPEG.exists():
-        return str(_REMOTION_FFMPEG)
-    return None
+    return shutil.which("ffmpeg")
 
 
 def load_cosyvoice_model():
@@ -177,6 +169,50 @@ def generate_variants(
     ffmpeg = find_ffmpeg()
     model, set_all_random_seed = load_cosyvoice_model()
     sample_rate = model.sample_rate
+
+    # ── Разрушаем детерминизм, внесённый самой моделью при загрузке ──
+    #
+    # CosyVoice в конструкторе CausalConditionalCFM делает set_all_random_seed(0)
+    # и кеширует `self.rand_noise` — фиксированный гауссовский тензор. Из-за
+    # этого:
+    #   (а) первый random.randint(...) ниже всегда возвращает одно и то же
+    #       значение (Python random был только что сброшен на seed(0)),
+    #       поэтому и все последующие — тоже; seeds для вариантов повторяются
+    #       между запусками и каждый запуск даёт побайтово ИДЕНТИЧНЫЕ mp3;
+    #   (б) диффузионный шум `z` в flow_matching — это срез закешированного
+    #       тензора, одинаковый при каждом инференсе.
+    #
+    # Фикс: (1) реседим Python random из системной энтропии, чтобы seed-ы
+    # реально различались между запусками; (2) перегенерируем rand_noise
+    # на каждый вызов runner'а, чтобы акустические детали отличались.
+    import torch as _torch  # noqa: PLC0415
+    random.seed()  # no-arg → os.urandom
+    # Ищем CausalConditionalCFM внутри модели и подменяем его rand_noise.
+    # Путь отличается у разных версий CosyVoice — пробуем несколько, молча
+    # пропускаем если не нашли (лучше потерять одну ось вариативности, чем
+    # упасть runner'ом).
+    try:
+        cfm = None
+        for attr in ("model", "flow"):
+            obj = model
+            for step in attr.split("."):
+                obj = getattr(obj, step, None)
+                if obj is None:
+                    break
+            if obj is not None and hasattr(obj, "decoder") and hasattr(obj.decoder, "rand_noise"):
+                cfm = obj.decoder
+                break
+            if obj is not None and hasattr(obj, "rand_noise"):
+                cfm = obj
+                break
+        if cfm is not None:
+            old_shape = cfm.rand_noise.shape
+            cfm.rand_noise = _torch.randn(old_shape)
+            print(f"[cosyvoice] пересоздал rand_noise {tuple(old_shape)} — разрушаю детерминизм", flush=True)
+        else:
+            print("[cosyvoice] не нашёл CausalConditionalCFM.rand_noise — варианты могут звучать похоже", flush=True)
+    except Exception as e:
+        print(f"[cosyvoice] не удалось подменить rand_noise: {e}", flush=True)
     # CosyVoice3 frontend сам вызывает load_wav на prompt внутри инференса,
     # поэтому передаём ПУТЬ к файлу, а не предзагруженный тензор.
     # Путь может содержать не-ASCII (например, «Ящик Пандоры»), поэтому копируем

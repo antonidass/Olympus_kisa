@@ -1,0 +1,7 @@
+2026/04/20-11:46:59.263 6b04 Reusing MANIFEST C:\Users\Антон\Desktop\BOGI AI\automation\.patchright_profile\Default\IndexedDB\https_labs.google_0.indexeddb.leveldb/MANIFEST-000001
+2026/04/20-11:46:59.263 6b04 Recovering log #4
+2026/04/20-11:46:59.264 6b04 Reusing old log C:\Users\Антон\Desktop\BOGI AI\automation\.patchright_profile\Default\IndexedDB\https_labs.google_0.indexeddb.leveldb/000004.log 
+2026/04/20-11:46:59.332 4ce0 Level-0 table #8: started
+2026/04/20-11:46:59.335 4ce0 Level-0 table #8: 23203 bytes OK
+2026/04/20-11:46:59.339 4ce0 Delete type=0 #4
+2026/04/20-11:46:59.341 6b04 Manual compaction at level-0 from '\x00\x05\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x06\x00\x00\x00' @ 0 : 0; will stop at (end)

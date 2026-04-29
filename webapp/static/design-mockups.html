@@ -1,0 +1,1125 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Макеты плеера в хедере — BOGI AI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=DM+Sans:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;1,9..144,300;1,9..144,400&display=swap" rel="stylesheet" />
+<style>
+  /* ───────────────────────────────────────────────
+     Палитра ровно та же, что в основном приложении
+     ─────────────────────────────────────────────── */
+  *,*::before,*::after { margin:0; padding:0; box-sizing:border-box; }
+
+  :root {
+    --bg:           #0c0c0e;
+    --bg-panel:     #141418;
+    --bg-card:      #1a1a20;
+    --bg-soft:      #101012;
+    --border:       #222228;
+    --border-hover: #33333c;
+    --text:         #dddad5;
+    --text-dim:     #777580;
+    --text-ghost:   #444250;
+    --blue:         #5b8af5;
+    --blue-dim:     #5b8af518;
+    --gold:         #d8a85c;
+    --gold-soft:    #b88e44;
+    --gold-deep:    #6a5436;
+    --gold-line:    #3a2e1c;
+    --gold-bg:      rgba(216,168,92,0.06);
+    --gold-glow:    rgba(216,168,92,0.16);
+    --font-mono:    'IBM Plex Mono', monospace;
+    --font-sans:    'DM Sans', sans-serif;
+    --font-display: 'Fraunces', serif;
+  }
+
+  html { font-size: 14px; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    min-height: 100vh;
+    padding: 32px 0 64px;
+    /* мягкая «текстура манускрипта» — едва заметные точки */
+    background-image:
+      radial-gradient(circle at 18% 12%, rgba(216,168,92,0.025) 0, transparent 1px),
+      radial-gradient(circle at 76% 84%, rgba(91,138,245,0.02)  0, transparent 1px);
+    background-size: 4px 4px, 5px 5px;
+  }
+
+  /* ── Заголовок страницы (только для презентации макетов) ── */
+  .page-head {
+    max-width: 1100px;
+    margin: 0 auto 36px;
+    padding: 0 32px;
+  }
+  .page-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.32em;
+    text-transform: uppercase;
+    color: var(--gold);
+    margin-bottom: 10px;
+  }
+  .page-title {
+    font-family: var(--font-display);
+    font-weight: 300;
+    font-size: 2.4rem;
+    line-height: 1.05;
+    color: var(--text);
+    letter-spacing: -0.015em;
+    margin-bottom: 8px;
+  }
+  .page-title em {
+    font-style: italic;
+    font-weight: 400;
+    color: var(--gold);
+  }
+  .page-sub {
+    font-size: 0.92rem;
+    color: var(--text-dim);
+    max-width: 56ch;
+    line-height: 1.55;
+  }
+
+  /* ── Контейнер для одного варианта ── */
+  .variant {
+    max-width: 1100px;
+    margin: 0 auto 56px;
+    padding: 0 32px;
+  }
+
+  .variant-meta {
+    display: grid;
+    grid-template-columns: 96px 1fr;
+    gap: 24px;
+    align-items: baseline;
+    margin-bottom: 18px;
+  }
+  .variant-num {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--gold-deep);
+    border-top: 1px solid var(--gold-line);
+    padding-top: 8px;
+  }
+  .variant-meta .text { padding-top: 4px; }
+  .variant-name {
+    font-family: var(--font-display);
+    font-weight: 400;
+    font-style: italic;
+    font-size: 1.55rem;
+    color: var(--text);
+    line-height: 1.15;
+    margin-bottom: 6px;
+  }
+  .variant-name b {
+    font-style: normal;
+    font-weight: 400;
+    color: var(--gold);
+  }
+  .variant-desc {
+    font-size: 0.86rem;
+    color: var(--text-dim);
+    line-height: 1.55;
+    max-width: 64ch;
+  }
+
+  /* ── Скелет хедера (имитация topbar) ── */
+  .mock-frame {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow:
+      0 1px 0 rgba(255,255,255,0.02) inset,
+      0 24px 56px -32px rgba(0,0,0,0.6);
+  }
+
+  .topbar {
+    position: relative;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .topbar-left { display: flex; align-items: center; gap: 20px; min-width: 0; }
+  .topbar-right { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
+
+  .brand {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--blue);
+    text-decoration: none;
+  }
+  .breadcrumb {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .crumb-link { color: var(--text-dim); text-decoration: none; }
+  .crumb-sep  { color: var(--text-ghost); }
+  .crumb-title {
+    color: var(--text);
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 240px;
+  }
+
+  .progress-pill {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 14px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 100px;
+  }
+  .progress-pill svg { transform: rotate(-90deg); }
+  .progress-pill svg circle { fill: none; stroke-width: 3; }
+  .progress-pill svg .track { stroke: var(--border); }
+  .progress-pill svg .fill { stroke: var(--blue); stroke-linecap: round; }
+  .progress-pill .pp-text {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+  }
+  .progress-pill .pp-text b { color: var(--text); font-weight: 500; }
+
+  /* «Стенд» под хедером — намёк на содержимое страницы */
+  .mock-body {
+    height: 88px;
+    background:
+      linear-gradient(180deg, rgba(216,168,92,0.02) 0%, transparent 100%),
+      var(--bg-soft);
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    border-top: 1px solid transparent;
+  }
+  .mock-body .mb-side {
+    border-right: 1px solid var(--border);
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .mock-body .mb-row {
+    height: 8px;
+    border-radius: 2px;
+    background: var(--border);
+  }
+  .mock-body .mb-row.short { width: 60%; }
+  .mock-body .mb-row.gold  { background: linear-gradient(90deg, var(--gold) 0%, var(--gold-soft) 100%); width: 38%; opacity: 0.55; }
+  .mock-body .mb-main { padding: 18px 24px; display: flex; flex-direction: column; gap: 10px; }
+  .mock-body .mb-block {
+    height: 12px;
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--bg-card) 0%, var(--bg-panel) 100%);
+  }
+  .mock-body .mb-block.w70 { width: 70%; }
+  .mock-body .mb-block.w50 { width: 50%; }
+
+  /* Универсальная подпись над хедером — как бы стрелка к ключевому элементу */
+  .annotation {
+    margin-top: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px 28px;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--gold-deep);
+  }
+  .annotation .an-item { display: flex; align-items: center; gap: 6px; }
+  .annotation .an-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--gold); opacity: 0.7;
+    box-shadow: 0 0 6px var(--gold-glow);
+  }
+  .annotation .an-item span { color: var(--gold); }
+
+  /* ===========================================================
+     Общая кнопка play (применяется во всех 3 вариантах)
+     =========================================================== */
+  .play-btn {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: var(--gold);
+    border: none;
+    color: #1a160e;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    box-shadow: 0 0 0 4px rgba(216,168,92,0.10);
+    transition: transform 0.15s ease, box-shadow 0.2s ease;
+  }
+  .play-btn:hover {
+    transform: scale(1.07);
+    box-shadow: 0 0 0 6px var(--gold-glow);
+  }
+  .play-btn svg { width: 10px; height: 10px; fill: currentColor; }
+  .play-btn:not(.playing) svg { margin-left: 1.5px; }
+
+  /* Маленькая инлайн-метка времени */
+  .time-mono {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  .time-mono b { color: var(--gold); font-weight: 500; }
+
+  /* ============================================================
+     ВАРИАНТ 1 — «МЕАНДР-ЛЕНТА»
+     Прогресс-бар = нижняя граница хедера. 27 тонких засечек.
+     ============================================================ */
+  .v1 .topbar { padding-bottom: 18px; }
+
+  .v1-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 12px 4px 4px;
+    margin-left: 4px;
+    border-left: 1px solid var(--gold-line);
+    padding-left: 14px;
+  }
+  .v1-inline .play-btn { width: 24px; height: 24px; box-shadow: 0 0 0 3px rgba(216,168,92,0.10); }
+  .v1-inline .play-btn svg { width: 8px; height: 8px; }
+  .v1-inline .v1-time {
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    color: var(--text-dim);
+    letter-spacing: 0.04em;
+  }
+  .v1-inline .v1-time b { color: var(--gold); font-weight: 500; }
+
+  .v1-ribbon {
+    position: absolute;
+    left: 0; right: 0;
+    bottom: -1px;          /* стоит ровно поверх border-bottom topbar */
+    height: 14px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .v1-ribbon-line {
+    position: absolute;
+    left: 24px; right: 24px;
+    bottom: 0;
+    height: 1px;
+    background: var(--gold-line);
+  }
+  .v1-ribbon-fill {
+    position: absolute;
+    left: 24px;
+    bottom: 0;
+    height: 1px;
+    width: 0%;
+    background: linear-gradient(90deg, transparent 0%, var(--gold) 100%);
+    box-shadow: 0 0 6px var(--gold-glow);
+    transition: width 0.18s linear;
+  }
+  .v1-ticks {
+    position: absolute;
+    left: 24px; right: 24px;
+    bottom: 0;
+    height: 7px;
+    pointer-events: none;
+  }
+  .v1-tick {
+    position: absolute;
+    bottom: 0;
+    width: 1px;
+    height: 4px;
+    background: var(--gold-deep);
+    transition: background 0.18s ease, height 0.18s ease;
+  }
+  .v1-tick.passed { background: var(--gold); height: 6px; }
+  .v1-tick.current { background: var(--gold); height: 9px; box-shadow: 0 0 6px var(--gold); }
+  .v1-ribbon:hover .v1-tick { height: 5px; }
+  .v1-ribbon:hover .v1-tick.passed { height: 7px; }
+
+  .v1-cursor {
+    position: absolute;
+    bottom: -1px;
+    width: 1px;
+    height: 12px;
+    background: var(--gold);
+    box-shadow: 0 0 8px var(--gold);
+    transform: translateX(-0.5px);
+    pointer-events: none;
+    transition: left 0.18s linear;
+  }
+  .v1-cursor::after {
+    content:"";
+    position: absolute;
+    top: -3px; left: -2px;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--gold);
+    box-shadow: 0 0 6px var(--gold);
+  }
+
+  .v1-tooltip {
+    position: absolute;
+    bottom: 16px;
+    transform: translateX(-50%);
+    padding: 4px 8px;
+    background: var(--bg-panel);
+    border: 1px solid var(--gold-line);
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--gold);
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+  .v1-tooltip.show { opacity: 1; }
+
+  /* ============================================================
+     ВАРИАНТ 2 — «СЕГМЕНТЫ»
+     27 дискретных секций. Каждая = одно предложение.
+     ============================================================ */
+  .v2-cluster {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    padding: 5px 12px 5px 5px;
+    background: var(--bg-soft);
+    border: 1px solid var(--gold-line);
+    border-radius: 100px;
+    margin-left: 8px;
+    transition: border-color 0.15s ease;
+  }
+  .v2-cluster:hover { border-color: var(--gold-soft); }
+
+  .v2-segments {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    height: 14px;
+    cursor: pointer;
+    padding: 4px 0;
+  }
+  .v2-seg {
+    height: 6px;
+    flex: 1 1 0;
+    min-width: 4px;
+    background: var(--gold-line);
+    border-radius: 1px;
+    transition: background 0.18s ease, height 0.18s ease, transform 0.18s ease;
+    position: relative;
+  }
+  .v2-seg.passed { background: var(--gold); }
+  .v2-seg.current {
+    background: var(--gold);
+    height: 9px;
+    box-shadow: 0 0 8px var(--gold-glow);
+  }
+  .v2-segments:hover .v2-seg:hover {
+    background: var(--gold-soft);
+    height: 9px;
+    transform: scaleY(1.2);
+  }
+  .v2-segments:hover .v2-seg.passed:hover { background: var(--gold); }
+
+  .v2-segments-wrap {
+    width: 320px;
+    position: relative;
+  }
+  .v2-tooltip {
+    position: absolute;
+    bottom: 22px;
+    transform: translateX(-50%);
+    padding: 3px 8px;
+    background: var(--bg-panel);
+    border: 1px solid var(--gold-line);
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.58rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--gold);
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+  }
+  .v2-tooltip.show { opacity: 1; }
+
+  .v2-time {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  .v2-time b { color: var(--gold); font-weight: 500; }
+
+  /* ============================================================
+     ВАРИАНТ 3 — «ЛИНЕЙКА НОМЕРОВ»
+     Тонкая лента + ряд цифр-якорей сверху как у книжного указателя.
+     Это секундный ряд под основным topbar.
+     ============================================================ */
+  .v3-shelf {
+    background: linear-gradient(180deg,
+      rgba(216,168,92,0.04) 0%,
+      rgba(216,168,92,0.015) 60%,
+      transparent 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 24px 12px;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 16px;
+  }
+  .v3-shelf .play-btn { width: 26px; height: 26px; }
+  .v3-shelf .play-btn svg { width: 9px; height: 9px; }
+
+  .v3-track {
+    position: relative;
+    height: 24px;
+    cursor: pointer;
+  }
+  .v3-numbers {
+    position: absolute;
+    inset: 0 0 14px 0;
+    display: block;
+  }
+  .v3-num {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    font-family: var(--font-mono);
+    font-size: 0.54rem;
+    letter-spacing: 0.04em;
+    color: var(--gold-deep);
+    user-select: none;
+    transition: color 0.18s ease;
+    line-height: 1;
+  }
+  .v3-num.major { color: var(--gold-soft); font-size: 0.58rem; }
+  .v3-num.passed { color: var(--gold); }
+  .v3-num.current { color: var(--gold); text-shadow: 0 0 6px var(--gold-glow); }
+
+  .v3-line {
+    position: absolute;
+    left: 0; right: 0;
+    bottom: 6px;
+    height: 1px;
+    background: var(--gold-line);
+  }
+  .v3-line-fill {
+    position: absolute;
+    left: 0;
+    bottom: 6px;
+    height: 1px;
+    width: 0%;
+    background: var(--gold);
+    box-shadow: 0 0 6px var(--gold-glow);
+    transition: width 0.18s linear;
+  }
+  .v3-tickbar {
+    position: absolute;
+    left: 0; right: 0;
+    bottom: 4px;
+    height: 6px;
+    pointer-events: none;
+  }
+  .v3-tick3 {
+    position: absolute;
+    bottom: 0;
+    width: 1px;
+    height: 3px;
+    background: var(--gold-deep);
+  }
+  .v3-tick3.passed { background: var(--gold); height: 4px; }
+  .v3-tick3.major { height: 5px; background: var(--gold-soft); }
+  .v3-tick3.major.passed { background: var(--gold); height: 6px; }
+
+  .v3-cursor {
+    position: absolute;
+    bottom: 2px;
+    width: 1px; height: 9px;
+    background: var(--gold);
+    box-shadow: 0 0 8px var(--gold);
+    transform: translateX(-0.5px);
+    transition: left 0.18s linear;
+    pointer-events: none;
+  }
+  .v3-cursor::before {
+    content:"";
+    position: absolute;
+    top: -3px; left: -2px;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--gold);
+  }
+
+  .v3-time {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  .v3-time b { color: var(--gold); font-weight: 500; }
+  .v3-time .div { color: var(--text-ghost); margin: 0 4px; }
+
+  /* ── Адаптив для узких окон ── */
+  @media (max-width: 760px) {
+    .v2-segments-wrap { width: 200px; }
+    .crumb-title { max-width: 130px; }
+    .topbar-right .progress-pill { display: none; }
+    .variant-meta { grid-template-columns: 1fr; gap: 10px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="page-head">
+  <div class="page-eyebrow">— BOGI AI · ревью озвучки</div>
+  <h1 class="page-title">Плеер <em>в хедере</em>, три варианта</h1>
+  <p class="page-sub">
+    Каждый вариант — настоящий рабочий хедер, в котором панель «Песнь целиком»
+    свёрнута в компактный контрол. Жмите на любой отрезок прогресса —
+    плеер прыгнет к началу соответствующего предложения.
+    Одинаковая логика, разная подача.
+  </p>
+</header>
+
+<!-- ──────────────────────────────────────────────────────────────
+     ВАРИАНТ 01 — МЕАНДР-ЛЕНТА
+     ────────────────────────────────────────────────────────────── -->
+<section class="variant v1">
+  <div class="variant-meta">
+    <div class="variant-num">01 · Меандр</div>
+    <div class="text">
+      <div class="variant-name">Тонкая золотая лента <b>под брендом</b></div>
+      <div class="variant-desc">
+        Прогресс-бар становится самой нижней линией хедера: 27 тонких засечек
+        на янтарной нитке, как кайма манускрипта. Кнопка play — миниатюрный
+        диск рядом с заголовком мифа. Самое тихое решение, почти не занимает
+        места и не спорит ни с брендом, ни с прогресс-кольцом справа.
+      </div>
+    </div>
+  </div>
+
+  <div class="mock-frame">
+    <div class="topbar">
+      <div class="topbar-left">
+        <a class="brand" href="#">Кисы Олимпа</a>
+        <div class="breadcrumb">
+          <a class="crumb-link" href="#">Ревью озвучки</a>
+          <span class="crumb-sep">/</span>
+          <strong class="crumb-title">Орфей и Эвридика</strong>
+        </div>
+
+        <!-- Инлайн play + время -->
+        <div class="v1-inline">
+          <button class="play-btn" data-role="play" aria-label="Play">
+            <svg viewBox="0 0 12 12" data-icon="play"><polygon points="2,1 11,6 2,11" /></svg>
+          </button>
+          <div class="v1-time">
+            <b data-role="cur">00:00</b> / <span data-role="tot">01:06</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="topbar-right">
+        <div class="progress-pill">
+          <svg width="22" height="22" viewBox="0 0 24 24">
+            <circle class="track" cx="12" cy="12" r="10" />
+            <circle class="fill"  cx="12" cy="12" r="10" stroke-dasharray="62.83" stroke-dashoffset="0" />
+          </svg>
+          <div class="pp-text"><b>27</b> / 27 проверено</div>
+        </div>
+      </div>
+
+      <!-- Лента-прогресс прямо на нижней границе хедера -->
+      <div class="v1-ribbon" data-role="bar">
+        <div class="v1-ribbon-line"></div>
+        <div class="v1-ribbon-fill" data-role="fill"></div>
+        <div class="v1-ticks" data-role="ticks"></div>
+        <div class="v1-cursor" data-role="cursor" style="left:24px"></div>
+        <div class="v1-tooltip" data-role="tip"></div>
+      </div>
+    </div>
+
+    <!-- Намёк на содержимое страницы -->
+    <div class="mock-body">
+      <div class="mb-side">
+        <div class="mb-row gold"></div>
+        <div class="mb-row"></div>
+        <div class="mb-row short"></div>
+        <div class="mb-row"></div>
+      </div>
+      <div class="mb-main">
+        <div class="mb-block w70"></div>
+        <div class="mb-block w50"></div>
+        <div class="mb-block w70"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="annotation">
+    <div class="an-item"><i class="an-dot"></i><span>27 засечек = 27 предложений</span></div>
+    <div class="an-item"><i class="an-dot"></i><span>наведение → номер сцены</span></div>
+    <div class="an-item"><i class="an-dot"></i><span>клик → прыжок на sentence_NN</span></div>
+  </div>
+</section>
+
+<!-- ──────────────────────────────────────────────────────────────
+     ВАРИАНТ 02 — СЕГМЕНТЫ
+     ────────────────────────────────────────────────────────────── -->
+<section class="variant v2">
+  <div class="variant-meta">
+    <div class="variant-num">02 · Сегменты</div>
+    <div class="text">
+      <div class="variant-name">Капсула из <b>двадцати семи делений</b></div>
+      <div class="variant-desc">
+        Каждое предложение — отдельный отрезок-полоска. Сегменты заполняются
+        золотом по мере воспроизведения, текущий чуть выше остальных. Дискретность
+        видна сразу: попасть мышкой в нужную сцену проще, чем в непрерывную
+        дорожку. Капсула живёт в хлебных крошках, как самостоятельный элемент.
+      </div>
+    </div>
+  </div>
+
+  <div class="mock-frame">
+    <div class="topbar">
+      <div class="topbar-left">
+        <a class="brand" href="#">Кисы Олимпа</a>
+        <div class="breadcrumb">
+          <a class="crumb-link" href="#">Ревью озвучки</a>
+          <span class="crumb-sep">/</span>
+          <strong class="crumb-title">Орфей и Эвридика</strong>
+        </div>
+
+        <div class="v2-cluster">
+          <button class="play-btn" data-role="play" aria-label="Play">
+            <svg viewBox="0 0 12 12" data-icon="play"><polygon points="2,1 11,6 2,11" /></svg>
+          </button>
+          <div class="v2-segments-wrap">
+            <div class="v2-segments" data-role="segments"></div>
+            <div class="v2-tooltip" data-role="tip"></div>
+          </div>
+          <div class="v2-time">
+            <b data-role="cur">00:00</b> / <span data-role="tot">01:06</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="topbar-right">
+        <div class="progress-pill">
+          <svg width="22" height="22" viewBox="0 0 24 24">
+            <circle class="track" cx="12" cy="12" r="10" />
+            <circle class="fill"  cx="12" cy="12" r="10" stroke-dasharray="62.83" stroke-dashoffset="0" />
+          </svg>
+          <div class="pp-text"><b>27</b> / 27 проверено</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mock-body">
+      <div class="mb-side">
+        <div class="mb-row gold"></div>
+        <div class="mb-row"></div>
+        <div class="mb-row short"></div>
+        <div class="mb-row"></div>
+      </div>
+      <div class="mb-main">
+        <div class="mb-block w70"></div>
+        <div class="mb-block w50"></div>
+        <div class="mb-block w70"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="annotation">
+    <div class="an-item"><i class="an-dot"></i><span>каждый сегмент = одно предложение</span></div>
+    <div class="an-item"><i class="an-dot"></i><span>текущий сегмент чуть выше остальных</span></div>
+    <div class="an-item"><i class="an-dot"></i><span>наведение → tooltip с номером</span></div>
+  </div>
+</section>
+
+<!-- ──────────────────────────────────────────────────────────────
+     ВАРИАНТ 03 — ЛИНЕЙКА НОМЕРОВ
+     ────────────────────────────────────────────────────────────── -->
+<section class="variant v3">
+  <div class="variant-meta">
+    <div class="variant-num">03 · Линейка</div>
+    <div class="text">
+      <div class="variant-name">Хедер <b>раскрывается на полку</b> с номерами</div>
+      <div class="variant-desc">
+        Под основной строкой брэндинга появляется тонкая полка-плеер: непрерывная
+        золотая нить, под ней засечки, над ними — редкие цифры-якоря (1·5·10·15·20·25·27),
+        как у книжного указателя глав. Самое «киношное» решение: показывает шкалу
+        целиком и даёт прицельный клик по любой цифре.
+      </div>
+    </div>
+  </div>
+
+  <div class="mock-frame">
+    <div class="topbar">
+      <div class="topbar-left">
+        <a class="brand" href="#">Кисы Олимпа</a>
+        <div class="breadcrumb">
+          <a class="crumb-link" href="#">Ревью озвучки</a>
+          <span class="crumb-sep">/</span>
+          <strong class="crumb-title">Орфей и Эвридика</strong>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <div class="progress-pill">
+          <svg width="22" height="22" viewBox="0 0 24 24">
+            <circle class="track" cx="12" cy="12" r="10" />
+            <circle class="fill"  cx="12" cy="12" r="10" stroke-dasharray="62.83" stroke-dashoffset="0" />
+          </svg>
+          <div class="pp-text"><b>27</b> / 27 проверено</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Полка-плеер -->
+    <div class="v3-shelf">
+      <button class="play-btn" data-role="play" aria-label="Play">
+        <svg viewBox="0 0 12 12" data-icon="play"><polygon points="2,1 11,6 2,11" /></svg>
+      </button>
+
+      <div class="v3-track" data-role="bar">
+        <div class="v3-numbers" data-role="numbers"></div>
+        <div class="v3-line"></div>
+        <div class="v3-line-fill" data-role="fill"></div>
+        <div class="v3-tickbar" data-role="ticks"></div>
+        <div class="v3-cursor" data-role="cursor" style="left:0%"></div>
+      </div>
+
+      <div class="v3-time">
+        <b data-role="cur">00:00</b><span class="div">/</span><span data-role="tot">01:06</span>
+      </div>
+    </div>
+
+    <div class="mock-body">
+      <div class="mb-side">
+        <div class="mb-row gold"></div>
+        <div class="mb-row"></div>
+        <div class="mb-row short"></div>
+        <div class="mb-row"></div>
+      </div>
+      <div class="mb-main">
+        <div class="mb-block w70"></div>
+        <div class="mb-block w50"></div>
+        <div class="mb-block w70"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="annotation">
+    <div class="an-item"><i class="an-dot"></i><span>цифры — кликабельные якоря глав</span></div>
+    <div class="an-item"><i class="an-dot"></i><span>каждая 5-я подсвечена ярче</span></div>
+    <div class="an-item"><i class="an-dot"></i><span>все 27 засечек на одной нити</span></div>
+  </div>
+</section>
+
+<script>
+  // ──────────────────────────────────────────────────────────────
+  // Имитация воспроизведения. Длительности 27 предложений (сумма ≈ 66 сек).
+  // ──────────────────────────────────────────────────────────────
+  const SENT_DUR = [3.2,2.4,1.8,2.7,2.1,3.4,1.9,2.6,2.2,3.0,
+                    2.5,1.7,2.8,2.3,3.1,2.0,2.4,2.6,1.9,3.3,
+                    2.1,2.7,2.5,1.8,3.0,2.4,2.1];
+  const SENT_START = [];
+  let acc = 0;
+  for (const d of SENT_DUR) { SENT_START.push(acc); acc += d; }
+  const TOTAL = acc;
+
+  function fmt(t) {
+    const m = Math.floor(t / 60);
+    const s = Math.floor(t - m * 60);
+    return String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+  }
+
+  function pctOf(t) { return (t / TOTAL) * 100; }
+
+  function sentenceForTime(t) {
+    let n = 0;
+    for (let i = 0; i < SENT_START.length; i++) {
+      if (t >= SENT_START[i]) n = i; else break;
+    }
+    return n; // 0-based
+  }
+
+  /* Иконки play/pause */
+  function setIcon(btn, playing) {
+    const svg = btn.querySelector('svg');
+    if (!svg) return;
+    if (playing) {
+      svg.innerHTML = '<rect x="2.5" y="1" width="2.5" height="10" fill="currentColor"/><rect x="7" y="1" width="2.5" height="10" fill="currentColor"/>';
+      btn.classList.add('playing');
+    } else {
+      svg.innerHTML = '<polygon points="2,1 11,6 2,11" fill="currentColor"/>';
+      btn.classList.remove('playing');
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────
+  // Базовый класс плеера; рендер делегируется варианту.
+  // ──────────────────────────────────────────────────────────────
+  class Player {
+    constructor(root, render) {
+      this.root = root;
+      this.render = render;
+      this.t = 0;
+      this.playing = false;
+      this.timer = null;
+
+      this.playBtn = root.querySelector('[data-role="play"]');
+      this.curEl   = root.querySelector('[data-role="cur"]');
+      this.totEl   = root.querySelector('[data-role="tot"]');
+
+      if (this.totEl) this.totEl.textContent = fmt(TOTAL);
+
+      this.playBtn.addEventListener('click', () => this.toggle());
+      render(this);  // первичная отрисовка статичной части
+      this.update();
+    }
+    toggle() {
+      this.playing = !this.playing;
+      setIcon(this.playBtn, this.playing);
+      if (this.playing) {
+        if (this.t >= TOTAL - 0.05) this.t = 0;
+        this.timer = setInterval(() => this.tick(), 100);
+      } else {
+        clearInterval(this.timer);
+      }
+    }
+    tick() {
+      this.t = Math.min(this.t + 0.1, TOTAL);
+      if (this.t >= TOTAL) {
+        clearInterval(this.timer);
+        this.playing = false;
+        setIcon(this.playBtn, false);
+      }
+      this.update();
+    }
+    seekTo(t) {
+      this.t = Math.max(0, Math.min(TOTAL, t));
+      this.update();
+    }
+    seekToSentence(n) {
+      this.seekTo(SENT_START[Math.max(0, Math.min(SENT_START.length - 1, n))]);
+    }
+    update() {
+      if (this.curEl) this.curEl.textContent = fmt(this.t);
+      this.draw();
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────
+  // Рендер для Варианта 1 («Меандр-лента»)
+  // ──────────────────────────────────────────────────────────────
+  function setupV1(root) {
+    const bar    = root.querySelector('[data-role="bar"]');
+    const fill   = root.querySelector('[data-role="fill"]');
+    const ticks  = root.querySelector('[data-role="ticks"]');
+    const cursor = root.querySelector('[data-role="cursor"]');
+    const tip    = root.querySelector('[data-role="tip"]');
+
+    /* раскладываем 27 засечек */
+    SENT_START.forEach((s, i) => {
+      const el = document.createElement('div');
+      el.className = 'v1-tick';
+      el.style.left = pctOf(s) + '%';
+      el.dataset.idx = i;
+      ticks.appendChild(el);
+    });
+
+    function pickFromEvent(e) {
+      const r = bar.getBoundingClientRect();
+      const innerLeft = 24, innerRight = r.width - 24;          // совпадает с inset 24px
+      const x = Math.max(innerLeft, Math.min(innerRight, e.clientX - r.left));
+      const ratio = (x - innerLeft) / (innerRight - innerLeft);
+      return { ratio, t: ratio * TOTAL, x: x };
+    }
+
+    const player = new Player(root, (p) => {
+      bar.addEventListener('click', (e) => {
+        const { t } = pickFromEvent(e);
+        const sn = sentenceForTime(t);
+        p.seekToSentence(sn);
+      });
+      bar.addEventListener('mousemove', (e) => {
+        const { t, x } = pickFromEvent(e);
+        const sn = sentenceForTime(t) + 1;
+        tip.textContent = 'sentence_' + String(sn).padStart(3,'0');
+        const r = bar.getBoundingClientRect();
+        tip.style.left = x + 'px';
+        tip.classList.add('show');
+      });
+      bar.addEventListener('mouseleave', () => tip.classList.remove('show'));
+    });
+
+    player.draw = function() {
+      const pct = pctOf(this.t);
+      fill.style.width = pct + '%';
+
+      const cur = sentenceForTime(this.t);
+      ticks.querySelectorAll('.v1-tick').forEach((el, i) => {
+        el.classList.toggle('passed', i < cur);
+        el.classList.toggle('current', i === cur);
+      });
+
+      // курсор позиционируем абсолютно: 24px + pct% от внутренней ширины
+      const r = bar.getBoundingClientRect();
+      const inner = r.width - 48;
+      cursor.style.left = (24 + (pct / 100) * inner) + 'px';
+    };
+    player.update();
+  }
+
+  // ──────────────────────────────────────────────────────────────
+  // Рендер для Варианта 2 («Сегменты»)
+  // ──────────────────────────────────────────────────────────────
+  function setupV2(root) {
+    const segWrap = root.querySelector('[data-role="segments"]');
+    const tip     = root.querySelector('[data-role="tip"]');
+
+    SENT_DUR.forEach((d, i) => {
+      const seg = document.createElement('div');
+      seg.className = 'v2-seg';
+      seg.style.flex = d + ' 1 0';   // ширина пропорциональна длительности предложения
+      seg.dataset.idx = i;
+      segWrap.appendChild(seg);
+    });
+
+    const player = new Player(root, (p) => {
+      segWrap.addEventListener('click', (e) => {
+        const seg = e.target.closest('.v2-seg');
+        if (!seg) return;
+        p.seekToSentence(parseInt(seg.dataset.idx, 10));
+      });
+      segWrap.addEventListener('mousemove', (e) => {
+        const seg = e.target.closest('.v2-seg');
+        if (!seg) { tip.classList.remove('show'); return; }
+        const i = parseInt(seg.dataset.idx, 10);
+        tip.textContent = 'sentence_' + String(i + 1).padStart(3, '0');
+        const r = segWrap.getBoundingClientRect();
+        const sr = seg.getBoundingClientRect();
+        const x = sr.left - r.left + sr.width / 2;
+        tip.style.left = x + 'px';
+        tip.classList.add('show');
+      });
+      segWrap.addEventListener('mouseleave', () => tip.classList.remove('show'));
+    });
+
+    player.draw = function() {
+      const cur = sentenceForTime(this.t);
+      segWrap.querySelectorAll('.v2-seg').forEach((el, i) => {
+        el.classList.toggle('passed', i < cur);
+        el.classList.toggle('current', i === cur);
+      });
+    };
+    player.update();
+  }
+
+  // ──────────────────────────────────────────────────────────────
+  // Рендер для Варианта 3 («Линейка»)
+  // ──────────────────────────────────────────────────────────────
+  function setupV3(root) {
+    const bar     = root.querySelector('[data-role="bar"]');
+    const fill    = root.querySelector('[data-role="fill"]');
+    const ticks   = root.querySelector('[data-role="ticks"]');
+    const cursor  = root.querySelector('[data-role="cursor"]');
+    const numEl   = root.querySelector('[data-role="numbers"]');
+
+    /* 27 засечек */
+    SENT_START.forEach((s, i) => {
+      const t = document.createElement('div');
+      t.className = 'v3-tick3' + ((i % 5 === 0 || i === 26) ? ' major' : '');
+      t.style.left = pctOf(s) + '%';
+      t.dataset.idx = i;
+      ticks.appendChild(t);
+    });
+
+    /* Цифры-якоря: 1, 5, 10, 15, 20, 25, 27 */
+    const anchors = [0, 4, 9, 14, 19, 24, 26];
+    anchors.forEach((i, k) => {
+      const n = document.createElement('div');
+      n.className = 'v3-num' + ((k === 0 || k === anchors.length - 1) ? ' major' : '');
+      n.dataset.idx = i;
+      n.textContent = (i + 1);
+      n.style.left = pctOf(SENT_START[i]) + '%';
+      n.style.cursor = 'pointer';
+      numEl.appendChild(n);
+    });
+
+    function pickFromEvent(e) {
+      const r = bar.getBoundingClientRect();
+      const x = Math.max(0, Math.min(r.width, e.clientX - r.left));
+      const ratio = x / r.width;
+      return { ratio, t: ratio * TOTAL };
+    }
+
+    const player = new Player(root, (p) => {
+      bar.addEventListener('click', (e) => {
+        // если кликнули по цифре — прыгаем точно к ней
+        const num = e.target.closest('.v3-num');
+        if (num) {
+          p.seekToSentence(parseInt(num.dataset.idx, 10));
+          return;
+        }
+        const { t } = pickFromEvent(e);
+        p.seekToSentence(sentenceForTime(t));
+      });
+    });
+
+    player.draw = function() {
+      const pct = pctOf(this.t);
+      fill.style.width = pct + '%';
+      cursor.style.left = pct + '%';
+
+      const cur = sentenceForTime(this.t);
+      ticks.querySelectorAll('.v3-tick3').forEach((el, i) => {
+        el.classList.toggle('passed', i < cur);
+      });
+      numEl.querySelectorAll('.v3-num').forEach((el) => {
+        const i = parseInt(el.dataset.idx, 10);
+        el.classList.toggle('passed', i < cur);
+        el.classList.toggle('current', i === cur);
+      });
+    };
+    player.update();
+  }
+
+  /* запускаем все три инстанса */
+  setupV1(document.querySelector('.v1'));
+  setupV2(document.querySelector('.v2'));
+  setupV3(document.querySelector('.v3'));
+</script>
+
+</body>
+</html>

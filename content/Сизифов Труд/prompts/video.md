@@ -83,8 +83,8 @@
 
 **Изображение:** content/Сизифов Труд/images/approved_images/scene_09_v1.jpg
 
-**Промпт:** Thanatos slumps further against the column, his chains clinking as they settle. Sisyphus slowly lifts the end of the chain with a smug swing of his humanoid paw, his other paw on his hip, his sly smirk widening into a full triumphant grin. Dying red embers from the toppled brazier glow and fade on the floor. Candlelight flickers across the scene. Thanatos's jaw tightens in silent fury. No speech, no dialogue, no talking, no voices, no mouth movement, no music. 3 seconds.
-**Звуки:** звон тяжёлых цепей (heavy chain clinking), потрескивание углей (ember crackling), лёгкое потрескивание свечи (candle flickering), тихое рычание Таната (low cat growl).
+**Промпт:** Thanatos slumps cross-legged inside a glowing circle of bright golden magical runes etched into the floor. The runes pulse warmly, bending the air around him so he sits stuck inside an invisible bubble. Sisyphus stands beside the circle and slowly raises one humanoid paw with a smug little wave, his other paw on his hip, his sly smirk widening into a full triumphant grin. The toppled brazier on the floor still gives off warm orange light. Candlelight flickers across the scene. Thanatos's jaw tightens in silent fury but his cloak only sways gently. No speech, no dialogue, no talking, no voices, no mouth movement, no music. 3 seconds.
+**Звуки:** низкий магический гул рун (low magical rune hum), мягкое сияние энергии (soft energy shimmer), потрескивание углей (ember crackling), лёгкое потрескивание свечи (candle flickering), тихое раздражённое мурлыканье Таната (low annoyed purr).
 
 ## Сцена 10
 
@@ -97,15 +97,15 @@
 
 **Изображение:** content/Сизифов Труд/images/approved_images/scene_11_v1.jpg
 
-**Промпт:** A wounded bipedal soldier cat slowly pushes himself up from the dusty ground with his humanoid paws, then blinks at the arrow sticking out of his chest and yanks it out with a baffled shrug. Another soldier slowly looks down at his own sword wound, pressing his humanoid paw against it in stunned disbelief. The horrified bipedal commander's humanoid arms tremble as they stretch outward. Dust clouds roll across the battlefield. A crow flies across the frame. No speech, no dialogue, no talking, no voices, no mouth movement, no music. 4 seconds.
-**Звуки:** скрип доспехов (armor creaking), хруст камней под лапами (gravel crunching), шёпот пыли на ветру (dust whispering), дальнее карканье (distant cawing), слабый стон (faint groan).
+**Промпт:** Two bipedal soldier cats sit on the dusty ground with their bronze helmets in their humanoid laps, scratching the back of their heads with bewildered shrugs. A bent training spear lies harmlessly between them, the wooden shaft cracked. One soldier picks up the broken spear and turns it over slowly in his humanoid paws, blinking at it in pure confusion. A third soldier in the background spreads his humanoid arms outward in a "what now?" gesture. Their bipedal commander stands with humanoid paws on his hips, mouth slightly open in baffled silence. Dust clouds roll lazily across the empty practice field. A crow flies across the frame. No speech, no dialogue, no talking, no voices, no mouth movement, no music, no blood, no wounds, no injuries. 4 seconds.
+**Звуки:** скрип доспехов (armor creaking), хруст камней под лапами (gravel crunching), удивлённое мурлыканье (puzzled purring), дальнее карканье (distant cawing), лёгкий ветер на поле (light field breeze).
 
 ## Сцена 12
 
 **Изображение:** content/Сизифов Труд/images/approved_images/scene_12_v1.jpg
 
-**Промпт:** The ancient cat on the bed slowly throws his humanoid paws up in exasperation, letting them fall back on the sheets with a huff. A circle of younger family members shifts uncomfortably, exchanging awkward humanoid glances and slumped shoulders. The bedside candle flame dims and flickers. Moonlight through the small window shifts gently across the floor. An olive branch on the wall trembles from a draft. No speech, no dialogue, no talking, no voices, no mouth movement, no music. 3 seconds.
-**Звуки:** вздох старого кота (old cat sighing), лёгкое покашливание (soft cough), потрескивание свечи (candle crackling), сверчки за окном (crickets outside), шелест простыни (bedsheet rustling).
+**Промпт:** A very old bipedal cat sits upright in a wooden chair by the open window, throwing his humanoid paws up in grumpy exasperation, then crossing them over his chest with a dramatic huff and an eye roll. A circle of younger family members stands around him holding fresh olive branches and bowls of figs, exchanging awkward humanoid glances and slumped shoulders, clearly out of ideas. Bright golden afternoon sunlight streams through the window, dust motes drifting in the warm beams. The candle on the table burns with a strong steady flame. An olive branch in a vase on the wall sways gently from the breeze. No speech, no dialogue, no talking, no voices, no mouth movement, no music. 3 seconds.
+**Звуки:** ворчливое мурлыканье старого кота (grumpy old cat purring), лёгкое покашливание-фырканье (light snorting huff), потрескивание свечи (candle crackling), сверчки за окном (crickets outside), шелест олив на ветру (olive leaves rustling).
 
 ## Сцена 13
 
@@ -118,8 +118,8 @@
 
 **Изображение:** content/Сизифов Труд/images/approved_images/scene_14_v1.jpg
 
-**Промпт:** Ares swings his bronze sword downward in a powerful humanoid two-pawed strike, cleaving through the iron chains with a shower of bright sparks. Chain links fall heavily to the stone floor. Thanatos slowly rises to his feet, his tattered cloak billowing outward, his humanoid paw reaching down to reclaim the scythe. Red firelight pulses and flickers. Ember sparks drift upward through the smoke. No speech, no dialogue, no talking, no voices, no mouth movement, no music. 3 seconds.
-**Звуки:** звон разрубаемой цепи (chain shattering), звук бронзового меча (bronze sword clang), падение металла (heavy metal hitting floor), шипение пламени (fire hissing), треск искр (sparks popping).
+**Промпт:** Ares stretches his open humanoid paw outward toward the glowing magic circle on the floor; a bright silver-gold pulse erupts from his paw and washes over the runes. The runes shatter into sparkling motes of light and dissolve into the air. Thanatos slowly rises to his feet inside the broken circle, his tattered cloak billowing outward, his humanoid paw reaching down to pick up his scythe. Red firelight pulses and flickers in the background. Spark motes drift upward like fireflies through the smoke. No speech, no dialogue, no talking, no voices, no mouth movement, no music. 3 seconds.
+**Звуки:** мощный магический разряд (powerful magic burst), рассыпающийся звон рун (scattering rune chime), низкий гул освобождённой энергии (low released-energy hum), шипение пламени (fire hissing), мягкий шелест плаща (soft cloak flutter).
 
 ## Сцена 15
 

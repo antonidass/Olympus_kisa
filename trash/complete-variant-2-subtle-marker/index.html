@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Кисы Олимпа · Тонкий маркер</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=DM+Sans:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;1,9..144,300&display=swap" rel="stylesheet">
+<style>
+/*
+  ВАРИАНТ 2 · «Тонкий маркер»
+  Концепция: Linear/Notion-минимализм. Пометка «опубликовано»
+  не кричит, а вписывается в существующий язык интерфейса:
+  — тонкая жёлтая полоса слева у карточки
+  — компактный чип ОПУБЛИКОВАНО в существующей шкале статусов
+  — toggle-pill в нижней части сайдбара ревью (одинаков для всех режимов)
+  — крошечная отметка ✓ в хлебных крошках
+  Никакой декорации, никаких штампов. Цвет — приглушённый амбер.
+*/
+
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+:root {
+  --bg: #0c0c0e;
+  --bg-sidebar: #101012;
+  --bg-panel: #141418;
+  --bg-card: #1a1a20;
+  --bg-hover: #1e1e26;
+  --border: #222228;
+  --border-hi: #33333c;
+  --text: #dddad5;
+  --text-dim: #777580;
+  --text-ghost: #444250;
+  --blue: #5b8af5;
+  --blue-dim: #5b8af518;
+  --green: #3dd68c;
+  --green-dim: #3dd68c18;
+  --red: #f55b5b;
+  /* Приглушённая жёлтая палитра — Linear/Notion */
+  --pub: #e0b34a;
+  --pub-dim: #e0b34a14;
+  --pub-soft: #f1d27a;
+  --pub-deep: #8a6a20;
+  --font-mono: 'IBM Plex Mono', monospace;
+  --font-sans: 'DM Sans', sans-serif;
+  --font-display: 'Fraunces', serif;
+}
+
+html { font-size: 14px; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+  padding: 32px;
+}
+
+.shell { max-width: 1480px; margin: 0 auto; }
+
+/* ─── ЗАГОЛОВОК МАКЕТА ─── */
+.demo-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin-bottom: 28px; padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+.demo-head-title {
+  font-family: var(--font-display);
+  font-style: italic; font-weight: 300;
+  font-size: 1.6rem; color: var(--text);
+}
+.demo-head-title em { color: var(--pub); font-style: italic; }
+.demo-head-meta {
+  font-family: var(--font-mono); font-size: 0.7rem;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--text-ghost);
+}
+.demo-head-meta b { color: var(--pub); font-weight: 500; }
+
+/* ─── ГРИД 3 ВИДА ─── */
+.grid {
+  display: grid;
+  grid-template-columns: 360px 1fr 320px;
+  gap: 24px;
+  align-items: start;
+}
+
+/* ── СПИСОК ── */
+.list {
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.list-head {
+  padding: 16px 18px 12px;
+  display: flex; justify-content: space-between; align-items: baseline;
+  border-bottom: 1px solid var(--border);
+}
+.list-head-title {
+  font-family: var(--font-display); font-weight: 400;
+  font-size: 1.1rem; letter-spacing: -0.01em;
+}
+.list-head-count {
+  font-family: var(--font-mono); font-size: 0.65rem;
+  letter-spacing: 0.18em; color: var(--text-ghost);
+}
+.list-filter {
+  display: flex; gap: 6px; padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.chip {
+  font-family: var(--font-mono); font-size: 0.6rem;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 5px 9px; border-radius: 3px;
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text-dim); cursor: pointer;
+  transition: all .15s;
+}
+.chip:hover { border-color: var(--border-hi); color: var(--text); }
+.chip.active { background: var(--blue-dim); border-color: var(--blue); color: var(--blue); }
+.chip.pub-chip.active {
+  background: var(--pub-dim); border-color: var(--pub); color: var(--pub);
+}
+
+.list-items { padding: 8px 10px 14px; }
+
+.item {
+  position: relative;
+  display: grid; grid-template-columns: 32px 1fr auto;
+  gap: 12px; align-items: center;
+  padding: 13px 16px 13px 16px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  cursor: pointer;
+  transition: all .18s;
+}
+.item:hover { background: var(--bg-card); border-color: var(--border); }
+.item-num {
+  font-family: var(--font-mono); font-size: 0.8rem;
+  color: var(--text-ghost); text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.item-name {
+  font-size: 0.92rem; font-weight: 500; color: var(--text);
+}
+.item-sub {
+  font-family: var(--font-mono); font-size: 0.66rem;
+  color: var(--text-ghost); margin-top: 3px; letter-spacing: 0.04em;
+}
+.item-status {
+  font-family: var(--font-mono); font-size: 0.58rem;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 3px;
+}
+.item-status.in_progress { background: var(--blue-dim); color: var(--blue); }
+.item-status.ready { background: var(--green-dim); color: var(--green); }
+.item-status.new { background: var(--bg); color: var(--text-dim); border:1px solid var(--border); }
+.item-status.published {
+  background: var(--pub-dim);
+  color: var(--pub);
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.item-status.published::before {
+  content:''; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--pub);
+}
+
+/* СУТЬ варианта 2: тонкая жёлтая полоса слева у опубликованных */
+.item.published {
+  /* очень лёгкое смягчение, не светим как ёлка */
+  background: linear-gradient(90deg, rgba(224,179,74,.04) 0%, transparent 30%);
+}
+.item.published::before {
+  content:''; position: absolute;
+  left: 0; top: 8px; bottom: 8px;
+  width: 2px; background: var(--pub);
+  border-radius: 1px;
+}
+/* активность остаётся синей, но полоса жёлтая если опубликован */
+.item.active {
+  background: var(--bg-card);
+  border-color: var(--blue);
+  box-shadow: 0 0 0 1px var(--blue), 0 4px 20px rgba(91,138,245,.18);
+}
+.item.active.published {
+  border-color: var(--pub);
+  box-shadow: 0 0 0 1px var(--pub), 0 4px 20px rgba(224,179,74,.16);
+}
+.item.active.published::before {
+  left: -10px; background: var(--pub);
+}
+
+/* ── ДЕТАЛКА ── */
+.detail {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 32px 36px;
+  position: relative;
+  min-height: 620px;
+}
+
+.detail-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 24px; margin-bottom: 28px;
+}
+.detail-head-left { min-width: 0; flex: 1; }
+.detail-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.62rem; letter-spacing: 0.22em;
+  text-transform: uppercase; color: var(--blue);
+  margin-bottom: 14px;
+}
+.detail-title {
+  font-family: var(--font-display);
+  font-weight: 300; font-size: 2.4rem;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  color: var(--text);
+  display: flex; align-items: baseline; gap: 14px;
+  margin-bottom: 8px;
+}
+.detail-title em {
+  font-style: italic; font-weight: 400;
+  color: var(--blue);
+}
+.detail-title.is-pub em { color: var(--pub-soft); }
+.detail-sub {
+  font-family: var(--font-mono);
+  font-size: 0.7rem; letter-spacing: 0.1em;
+  color: var(--text-dim);
+}
+.detail-sub b { color: var(--text); font-weight: 500; }
+
+/* СУТЬ варианта 2: компактный toggle-pill справа в шапке детальки */
+.toggle-pill {
+  display: inline-flex; align-items: center; gap: 12px;
+  padding: 8px 12px 8px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all .2s;
+  flex-shrink: 0;
+}
+.toggle-pill:hover { border-color: var(--border-hi); background: var(--bg-hover); }
+.toggle-pill-text {
+  font-family: var(--font-mono);
+  font-size: 0.66rem; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--text-dim);
+  line-height: 1;
+}
+.toggle-pill-switch {
+  width: 32px; height: 18px;
+  background: var(--border);
+  border-radius: 999px; position: relative;
+  transition: background .2s;
+}
+.toggle-pill-switch::after {
+  content:''; position: absolute;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  top: 2px; left: 2px;
+  transition: all .2s ease;
+}
+.toggle-pill.on { border-color: var(--pub); background: var(--pub-dim); }
+.toggle-pill.on .toggle-pill-text { color: var(--pub); }
+.toggle-pill.on .toggle-pill-switch { background: var(--pub); }
+.toggle-pill.on .toggle-pill-switch::after {
+  left: 16px; background: #0c0c0e;
+}
+
+/* Прогресс по этапам */
+.stages {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 10px; margin-bottom: 28px;
+}
+.stage {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 14px 12px;
+}
+.stage-icon {
+  width: 22px; height: 22px; color: var(--text-ghost);
+  margin-bottom: 8px;
+}
+.stage-name {
+  font-family: var(--font-mono); font-size: 0.62rem;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--text-dim); margin-bottom: 6px;
+}
+.stage-val {
+  font-family: var(--font-display); font-style: italic;
+  font-weight: 300; font-size: 1.4rem; color: var(--text);
+}
+.stage-val small {
+  font-family: var(--font-mono); font-size: 0.7rem;
+  color: var(--text-ghost); font-style: normal;
+  margin-left: 4px;
+}
+.stage.done .stage-icon { color: var(--green); }
+.stage.done .stage-val { color: var(--green); }
+
+.detail-scenes-title {
+  font-family: var(--font-mono); font-size: 0.62rem;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+  display: flex; align-items: baseline; justify-content: space-between;
+}
+.detail-scenes-title b { color: var(--green); }
+.scene-tiles {
+  display: grid; grid-template-columns: repeat(8, 1fr);
+  gap: 4px; margin-bottom: 28px;
+}
+.tile {
+  aspect-ratio: 1; border-radius: 3px;
+  background: var(--border);
+}
+.tile.done { background: var(--green); }
+.tile.regen { background: var(--red); }
+
+/* «Лог публикации» — небольшой блок снизу детальки, появляется только когда on */
+.pub-log {
+  margin-top: 24px;
+  padding: 14px 18px;
+  background: linear-gradient(90deg, rgba(224,179,74,.06), transparent 80%);
+  border-left: 2px solid var(--pub);
+  border-radius: 4px;
+  display: flex; align-items: center; gap: 14px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem; letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+.pub-log b { color: var(--pub); font-weight: 500; }
+.pub-log-date {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.pub-log-undo {
+  margin-left: auto;
+  font-family: var(--font-mono); font-size: 0.62rem;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--text-ghost);
+  background: none; border: none; cursor: pointer;
+  padding: 4px 8px; border-radius: 3px;
+}
+.pub-log-undo:hover { color: var(--pub); background: rgba(224,179,74,.06); }
+
+/* ── ПРАВО: ФРАГМЕНТ РЕВЬЮ ── */
+.review-frag {
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.frag-head {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.frag-head-eyebrow {
+  font-family: var(--font-mono); font-size: 0.58rem;
+  letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--text-ghost); margin-bottom: 6px;
+}
+.frag-head-title {
+  font-family: var(--font-display); font-style: italic;
+  font-weight: 400; font-size: 1.05rem;
+  display: flex; align-items: center; gap: 8px;
+}
+/* Маленькая ✓ возле названия в хлебных крошках */
+.frag-head-pub-mark {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: var(--pub-dim); color: var(--pub);
+  border: 1px solid var(--pub);
+  font-style: normal;
+}
+.frag-head-pub-mark svg { width: 9px; height: 9px; stroke-width: 3; }
+
+.frag-crumb {
+  display: flex; align-items: center; gap: 6px; margin-top: 4px;
+  font-family: var(--font-mono); font-size: 0.6rem;
+  letter-spacing: 0.1em; color: var(--text-dim);
+}
+.frag-crumb b { color: var(--text); font-weight: 500; }
+
+.frag-sb {
+  display: flex; min-height: 380px;
+}
+.frag-rail {
+  width: 44px; padding: 12px 0;
+  display: flex; flex-direction: column; gap: 8px; align-items: center;
+  border-right: 1px solid var(--border);
+}
+.rail-btn {
+  width: 32px; height: 32px;
+  border-radius: 6px;
+  display: grid; place-items: center;
+  background: transparent; border: 1px solid transparent;
+  color: var(--text-dim); cursor: pointer;
+}
+.rail-btn.active { background: var(--blue-dim); color: var(--blue); border-color: var(--blue); }
+.rail-btn svg { width: 14px; height: 14px; }
+
+.frag-body { flex: 1; padding: 12px 14px; display: flex; flex-direction: column; }
+
+/* СУТЬ варианта 2: тот же toggle-pill живёт внизу sb-action-slot */
+.sb-action-slot {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex; align-items: center; gap: 10px;
+  cursor: pointer;
+  transition: all .2s;
+}
+.sb-action-slot:hover { background: var(--bg-hover); border-color: var(--border-hi); }
+.sb-action-slot.on { background: var(--pub-dim); border-color: var(--pub); }
+.sb-action-slot-text {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 0.62rem; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--text-dim);
+  line-height: 1.3;
+}
+.sb-action-slot.on .sb-action-slot-text { color: var(--pub); }
+.sb-action-slot small {
+  display: block; color: var(--text-ghost);
+  font-size: 0.55rem; letter-spacing: 0.18em;
+  text-transform: uppercase; margin-top: 3px;
+  font-weight: 400;
+}
+.sb-action-slot.on small { color: rgba(224,179,74,.7); }
+
+.sb-toggle-mini {
+  width: 28px; height: 16px;
+  background: var(--border);
+  border-radius: 999px; position: relative;
+  flex-shrink: 0;
+  transition: background .2s;
+}
+.sb-toggle-mini::after {
+  content:''; position: absolute;
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  top: 2px; left: 2px;
+  transition: all .2s ease;
+}
+.sb-action-slot.on .sb-toggle-mini { background: var(--pub); }
+.sb-action-slot.on .sb-toggle-mini::after { left: 14px; background: #0c0c0e; }
+
+.frag-body-title {
+  font-family: var(--font-mono); font-size: 0.6rem;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--text-ghost); margin-bottom: 8px;
+}
+
+.scene-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 9px; border-radius: 4px;
+  font-family: var(--font-mono); font-size: 0.7rem;
+  color: var(--text-dim);
+}
+.scene-row.done { color: var(--green); }
+.scene-row.dot::before {
+  content:''; width:6px; height:6px; border-radius: 50%;
+  background: currentColor; opacity: .7;
+}
+
+/* Подсказка снизу */
+.demo-foot {
+  margin-top: 28px;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  color: var(--text-ghost);
+  text-align: center;
+  padding-top: 18px;
+  border-top: 1px dashed var(--border);
+}
+.demo-foot b { color: var(--pub); font-weight: 400; }
+
+.section-sep {
+  margin: 40px 0 18px;
+  font-family: var(--font-display); font-style: italic;
+  font-weight: 300; font-size: 1.2rem;
+  color: var(--text); padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+.section-sep em { color: var(--pub); }
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <header class="demo-head">
+    <div class="demo-head-title">
+      Вариант 02 · <em>Тонкий маркер</em>
+    </div>
+    <div class="demo-head-meta">
+      аэстетика — <b>LINEAR / NOTION</b> · акцент — приглушённый жёлтый #e0b34a
+    </div>
+  </header>
+
+  <div class="grid">
+
+    <!-- ── ЛЕВО: ХАБ ── -->
+    <aside class="list">
+      <div class="list-head">
+        <div class="list-head-title">Мифы</div>
+        <div class="list-head-count">14 / 14</div>
+      </div>
+      <div class="list-filter">
+        <button class="chip active">все</button>
+        <button class="chip">в работе</button>
+        <button class="chip">готовы</button>
+        <button class="chip">новые</button>
+        <button class="chip pub-chip">опубликов.</button>
+      </div>
+      <div class="list-items">
+
+        <div class="item published">
+          <div class="item-num">01</div>
+          <div>
+            <div class="item-name">Пандора</div>
+            <div class="item-sub">25 сцен · 18 апр</div>
+          </div>
+          <div class="item-status published">опуб.</div>
+        </div>
+
+        <div class="item published">
+          <div class="item-num">02</div>
+          <div>
+            <div class="item-name">Икар и Дедал</div>
+            <div class="item-sub">22 сцены · 21 апр</div>
+          </div>
+          <div class="item-status published">опуб.</div>
+        </div>
+
+        <div class="item published">
+          <div class="item-num">03</div>
+          <div>
+            <div class="item-name">Тесей и Минотавр</div>
+            <div class="item-sub">23 сцены · 23 апр</div>
+          </div>
+          <div class="item-status published">опуб.</div>
+        </div>
+
+        <div class="item active">
+          <div class="item-num">04</div>
+          <div>
+            <div class="item-name">Сизифов труд</div>
+            <div class="item-sub">21 сцена · 21 / 21 готово</div>
+          </div>
+          <div class="item-status ready">готов</div>
+        </div>
+
+        <div class="item">
+          <div class="item-num">05</div>
+          <div>
+            <div class="item-name">Мидас и золото</div>
+            <div class="item-sub">24 сцены · 18 / 24</div>
+          </div>
+          <div class="item-status in_progress">в работе</div>
+        </div>
+
+        <div class="item">
+          <div class="item-num">06</div>
+          <div>
+            <div class="item-name">Орфей и Эвридика</div>
+            <div class="item-sub">26 сцен · не начат</div>
+          </div>
+          <div class="item-status new">нов.</div>
+        </div>
+
+        <div class="item">
+          <div class="item-num">07</div>
+          <div>
+            <div class="item-name">Персефона и Аид</div>
+            <div class="item-sub">22 сцены · не начат</div>
+          </div>
+          <div class="item-status new">нов.</div>
+        </div>
+
+        <div class="item">
+          <div class="item-num">08</div>
+          <div>
+            <div class="item-name">Арахна</div>
+            <div class="item-sub">19 сцен · не начат</div>
+          </div>
+          <div class="item-status new">нов.</div>
+        </div>
+
+      </div>
+    </aside>
+
+    <!-- ── ЦЕНТР: миф НЕ опубликован — выключенный toggle ── -->
+    <main class="detail">
+      <div class="detail-head">
+        <div class="detail-head-left">
+          <div class="detail-eyebrow">— миф №04</div>
+          <h1 class="detail-title">Сизифов <em>труд</em></h1>
+          <div class="detail-sub">21 сцена · отревьюено <b>полностью</b> · готов к финалу</div>
+        </div>
+        <!-- toggle в выключенном состоянии -->
+        <button class="toggle-pill" id="t-off">
+          <span class="toggle-pill-text">опубликован</span>
+          <span class="toggle-pill-switch"></span>
+        </button>
+      </div>
+
+      <div class="stages">
+        <div class="stage done">
+          <svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+          <div class="stage-name">озвучка</div>
+          <div class="stage-val">21<small>/ 21</small></div>
+        </div>
+        <div class="stage done">
+          <svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+          <div class="stage-name">картинки</div>
+          <div class="stage-val">21<small>/ 21</small></div>
+        </div>
+        <div class="stage done">
+          <svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="5" width="20" height="14" rx="2"/><polygon points="10,9 16,12 10,15" fill="currentColor"/></svg>
+          <div class="stage-name">видео</div>
+          <div class="stage-val">21<small>/ 21</small></div>
+        </div>
+      </div>
+
+      <div class="detail-scenes-title">
+        <span>Сцены</span><b>21 / 21 готово</b>
+      </div>
+      <div class="scene-tiles">
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+      </div>
+    </main>
+
+    <!-- ── ПРАВО: ФРАГМЕНТ РЕВЬЮ — внутри ещё не опубликованного ── -->
+    <aside class="review-frag">
+      <div class="frag-head">
+        <div class="frag-head-eyebrow">внутри сценария</div>
+        <div class="frag-head-title">Сизифов труд</div>
+        <div class="frag-crumb">ревью озвучки · <b>05 / 21</b></div>
+      </div>
+
+      <div class="frag-sb">
+        <div class="frag-rail">
+          <button class="rail-btn active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg></button>
+          <button class="rail-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></button>
+          <button class="rail-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><polygon points="10,9 16,12 10,15" fill="currentColor"/></svg></button>
+        </div>
+        <div class="frag-body">
+          <!-- Тот же toggle, но в формате sb-action-slot (выкл.) -->
+          <div class="sb-action-slot">
+            <div class="sb-action-slot-text">
+              опубликован
+              <small>не отмечен</small>
+            </div>
+            <div class="sb-toggle-mini"></div>
+          </div>
+
+          <div class="frag-body-title">Сцены</div>
+          <div class="scene-row done dot">001 · готова</div>
+          <div class="scene-row done dot">002 · готова</div>
+          <div class="scene-row done dot">003 · готова</div>
+          <div class="scene-row done dot">004 · готова</div>
+          <div class="scene-row done dot">005 · готова</div>
+          <div class="scene-row dot">006 · ожидает</div>
+          <div class="scene-row dot">007 · ожидает</div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ─────── ВТОРОЙ РЯД: тот же макет, но toggle ВКЛ. ─────── -->
+  <h2 class="section-sep">
+    Состояние <em>после</em> включения переключателя
+  </h2>
+
+  <div class="grid">
+
+    <aside class="list">
+      <div class="list-head">
+        <div class="list-head-title">Мифы</div>
+        <div class="list-head-count">14 / 14</div>
+      </div>
+      <div class="list-filter">
+        <button class="chip">все</button>
+        <button class="chip">в работе</button>
+        <button class="chip">готовы</button>
+        <button class="chip">новые</button>
+        <button class="chip pub-chip active">опубликов.</button>
+      </div>
+      <div class="list-items">
+        <div class="item published">
+          <div class="item-num">01</div>
+          <div>
+            <div class="item-name">Пандора</div>
+            <div class="item-sub">25 сцен · 18 апр</div>
+          </div>
+          <div class="item-status published">опуб.</div>
+        </div>
+
+        <div class="item published">
+          <div class="item-num">02</div>
+          <div>
+            <div class="item-name">Икар и Дедал</div>
+            <div class="item-sub">22 сцены · 21 апр</div>
+          </div>
+          <div class="item-status published">опуб.</div>
+        </div>
+
+        <div class="item published">
+          <div class="item-num">03</div>
+          <div>
+            <div class="item-name">Тесей и Минотавр</div>
+            <div class="item-sub">23 сцены · 23 апр</div>
+          </div>
+          <div class="item-status published">опуб.</div>
+        </div>
+
+        <!-- активный — теперь тоже опубликован -->
+        <div class="item active published">
+          <div class="item-num">04</div>
+          <div>
+            <div class="item-name">Сизифов труд</div>
+            <div class="item-sub">21 сцена · 26 апр</div>
+          </div>
+          <div class="item-status published">опуб.</div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="detail">
+      <div class="detail-head">
+        <div class="detail-head-left">
+          <div class="detail-eyebrow" style="color: var(--pub);">— миф №04 · опубликован 26 апр</div>
+          <h1 class="detail-title is-pub">Сизифов <em>труд</em></h1>
+          <div class="detail-sub">21 сцена · отревьюено <b>полностью</b></div>
+        </div>
+        <!-- toggle в ВКЛ. состоянии -->
+        <button class="toggle-pill on">
+          <span class="toggle-pill-text">опубликован</span>
+          <span class="toggle-pill-switch"></span>
+        </button>
+      </div>
+
+      <div class="stages">
+        <div class="stage done"><svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg><div class="stage-name">озвучка</div><div class="stage-val">21<small>/ 21</small></div></div>
+        <div class="stage done"><svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg><div class="stage-name">картинки</div><div class="stage-val">21<small>/ 21</small></div></div>
+        <div class="stage done"><svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="5" width="20" height="14" rx="2"/><polygon points="10,9 16,12 10,15" fill="currentColor"/></svg><div class="stage-name">видео</div><div class="stage-val">21<small>/ 21</small></div></div>
+      </div>
+
+      <div class="detail-scenes-title">
+        <span>Сцены</span><b>21 / 21 готово</b>
+      </div>
+      <div class="scene-tiles">
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+      </div>
+
+      <!-- Появляется лог -->
+      <div class="pub-log">
+        <span>отмечен опубликованным <b class="pub-log-date">26 апр 2026</b> · только визуально, ничего не блокируется</span>
+        <button class="pub-log-undo">снять отметку</button>
+      </div>
+    </main>
+
+    <aside class="review-frag">
+      <div class="frag-head">
+        <div class="frag-head-eyebrow">внутри сценария</div>
+        <div class="frag-head-title">
+          Сизифов труд
+          <span class="frag-head-pub-mark">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 12l5 5L20 7"/></svg>
+          </span>
+        </div>
+        <div class="frag-crumb">ревью озвучки · <b style="color:var(--pub)">опубликован</b></div>
+      </div>
+
+      <div class="frag-sb">
+        <div class="frag-rail">
+          <button class="rail-btn active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg></button>
+          <button class="rail-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></button>
+          <button class="rail-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><polygon points="10,9 16,12 10,15" fill="currentColor"/></svg></button>
+        </div>
+        <div class="frag-body">
+          <div class="sb-action-slot on">
+            <div class="sb-action-slot-text">
+              опубликован
+              <small>26 апр 2026</small>
+            </div>
+            <div class="sb-toggle-mini"></div>
+          </div>
+
+          <div class="frag-body-title">Сцены</div>
+          <div class="scene-row done dot">001 · готова</div>
+          <div class="scene-row done dot">002 · готова</div>
+          <div class="scene-row done dot">003 · готова</div>
+          <div class="scene-row done dot">004 · готова</div>
+          <div class="scene-row done dot">005 · готова</div>
+          <div class="scene-row done dot">006 · готова</div>
+          <div class="scene-row done dot">007 · готова</div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="demo-foot">
+    <b>опубликован</b> = одно поле-флаг · переключается одной кнопкой · везде один и тот же toggle-pill
+  </div>
+
+</div>
+
+</body>
+</html>

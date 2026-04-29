@@ -1,0 +1,6 @@
+2026/04/20-11:42:53.404 639c Creating DB C:\Users\Антон\Desktop\BOGI AI\automation\.patchright_profile\Default\IndexedDB\https_labs.google_0.indexeddb.leveldb since it was missing.
+2026/04/20-11:42:53.412 639c Reusing MANIFEST C:\Users\Антон\Desktop\BOGI AI\automation\.patchright_profile\Default\IndexedDB\https_labs.google_0.indexeddb.leveldb/MANIFEST-000001
+2026/04/20-11:42:53.590 2060 Level-0 table #5: started
+2026/04/20-11:42:53.603 2060 Level-0 table #5: 1298 bytes OK
+2026/04/20-11:42:53.609 2060 Delete type=0 #3
+2026/04/20-11:42:53.612 60bc Manual compaction at level-0 from '\x00\x01\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x02\x00\x00\x00' @ 0 : 0; will stop at (end)

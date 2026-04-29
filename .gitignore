@@ -15,15 +15,6 @@ content/Ящик Пандоры/*.mp3
 content/Ящик Пандоры/*.png
 content/Ящик Пандоры/*.zip
 
-# Remotion
-remotion/node_modules/
-remotion/out/
-remotion/.remotion/
-remotion/public/audio/
-remotion/public/scenes/
-remotion/public/music/
-remotion/public/*.mp4
-
 # Браузерный профиль автоматизации
 automation/.browser_profile/
 

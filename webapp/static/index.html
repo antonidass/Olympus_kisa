@@ -18,6 +18,25 @@
       <strong id="scenario-title" class="review-only">—</strong>
     </div>
   </div>
+
+  <!-- Плеер «Песни целиком» — капсула из 27 сегментов в центре хедера,
+       между заголовком сценария и progress-pill. Появляется только когда
+       все сцены отревьюены. -->
+  <div class="topbar-center review-only">
+    <div class="header-song" id="header-song" hidden>
+      <button class="header-song-play" id="header-song-play" aria-label="Play">
+        <svg viewBox="0 0 12 12"><polygon points="2,1 11,6 2,11"/></svg>
+      </button>
+      <div class="header-song-segments-wrap">
+        <div class="header-song-segments" id="header-song-segments"></div>
+        <div class="header-song-tip" id="header-song-tip"></div>
+      </div>
+      <div class="header-song-time">
+        <b id="header-song-cur">00:00</b> / <span id="header-song-tot">--:--</span>
+      </div>
+    </div>
+  </div>
+
   <div class="topbar-right">
     <!-- Hub: поиск -->
     <div class="search hub-only">
@@ -36,6 +55,7 @@
       <div class="progress-text"><b id="done-count">0</b> / <span id="total-count">0</span> проверено</div>
     </div>
   </div>
+
 </div>
 
 <!-- CONTENT WRAP -->
@@ -46,7 +66,7 @@
     <div class="chooser-inner">
       <div class="chooser-eyebrow">пиксель-арт шортсы по мифам Олимпа</div>
       <h1 class="chooser-title">Что будем <em>проверять</em>?</h1>
-      <p class="chooser-sub">Выберите режим — озвучка сцен из ElevenLabs или изображения из ImageFX.</p>
+      <p class="chooser-sub">Выберите режим — озвучка из ElevenLabs, изображения из ImageFX или клипы Veo.</p>
 
       <div class="chooser-grid">
         <button class="chooser-card" data-mode="voice">
@@ -89,6 +109,25 @@
           </div>
           <div class="chooser-card-arrow">→</div>
         </button>
+
+        <button class="chooser-card" data-mode="video">
+          <div class="chooser-card-icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3">
+              <rect x="2" y="5" width="20" height="14" rx="2"/>
+              <polygon points="10,9 16,12 10,15" fill="currentColor"/>
+            </svg>
+          </div>
+          <div class="chooser-card-body">
+            <div class="chooser-card-label">режим 03</div>
+            <div class="chooser-card-title">Ревью видео</div>
+            <div class="chooser-card-desc">
+              Посмотреть дубли image-to-video из Veo, выбрать лучший
+              клип на каждую сцену, отметить промахи на перегенерацию.
+            </div>
+            <div class="chooser-card-meta" id="chooser-video-meta">загрузка…</div>
+          </div>
+          <div class="chooser-card-arrow">→</div>
+        </button>
       </div>
     </div>
   </div>
@@ -98,13 +137,20 @@
     <aside class="hub-list-panel">
       <div class="hub-list-header">
         <div class="hub-list-title">Мифы</div>
-        <div class="hub-list-count" id="hub-count">—</div>
+        <div class="hub-list-header-right">
+          <button class="hub-add-btn" id="hub-add-btn" type="button" title="Создать новый миф со всеми папками и шаблонами">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+            <span>новый</span>
+          </button>
+          <div class="hub-list-count" id="hub-count">—</div>
+        </div>
       </div>
       <div class="hub-list-filter">
         <button class="hub-chip active" data-filter="all">все</button>
         <button class="hub-chip" data-filter="in_progress">в работе</button>
         <button class="hub-chip" data-filter="ready">готовы</button>
         <button class="hub-chip" data-filter="new">новые</button>
+        <button class="hub-chip published-chip" data-filter="published">опубл.</button>
       </div>
       <div class="hub-list-items" id="hub-list-items">
         <div class="hub-list-loading">загрузка…</div>
@@ -118,7 +164,83 @@
 
   <!-- REVIEW VIEW (текущий интерфейс ревью) -->
   <div class="review-container">
+
+    <!-- ─── ACTIVITY RAIL: быстрое переключение режимов внутри сценария ───
+         60px вертикальная полоса между топбаром и сайдбаром (паттерн VS Code
+         Activity Bar). Три кнопки-режима с иконкой + кольцом прогресса по
+         периметру. Клик переключает режим и СОХРАНЯЕТ активную сцену:
+         loadScenario(scenario, activeSceneBase) сам подберёт совпадение или
+         откатится на первую сцену, если базы нет. Внизу — кнопка ← в хаб
+         текущего режима. -->
+    <aside class="mode-rail" id="mode-rail" aria-label="Режим ревью">
+      <div class="mode-rail-top">
+
+        <button class="mode-btn" data-target-mode="voice" type="button">
+          <svg class="mode-btn-ring" viewBox="0 0 44 44" aria-hidden="true">
+            <circle class="track" cx="22" cy="22" r="19"/>
+            <circle class="fill" cx="22" cy="22" r="19" stroke-dasharray="119.4" stroke-dashoffset="119.4"/>
+          </svg>
+          <svg class="mode-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            <line x1="12" y1="19" x2="12" y2="23"/>
+          </svg>
+          <span class="mode-btn-new-dot" hidden></span>
+          <div class="mode-btn-tip">
+            <div class="mode-btn-tip-title">Озвучка</div>
+            <div class="mode-btn-tip-meta">загрузка…</div>
+            <div class="mode-btn-tip-hint"></div>
+          </div>
+        </button>
+
+        <button class="mode-btn" data-target-mode="image" type="button">
+          <svg class="mode-btn-ring" viewBox="0 0 44 44" aria-hidden="true">
+            <circle class="track" cx="22" cy="22" r="19"/>
+            <circle class="fill" cx="22" cy="22" r="19" stroke-dasharray="119.4" stroke-dashoffset="119.4"/>
+          </svg>
+          <svg class="mode-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <circle cx="8.5" cy="8.5" r="1.5"/>
+            <path d="M21 15l-5-5L5 21"/>
+          </svg>
+          <span class="mode-btn-new-dot" hidden></span>
+          <div class="mode-btn-tip">
+            <div class="mode-btn-tip-title">Картинки</div>
+            <div class="mode-btn-tip-meta">загрузка…</div>
+            <div class="mode-btn-tip-hint"></div>
+          </div>
+        </button>
+
+        <button class="mode-btn" data-target-mode="video" type="button">
+          <svg class="mode-btn-ring" viewBox="0 0 44 44" aria-hidden="true">
+            <circle class="track" cx="22" cy="22" r="19"/>
+            <circle class="fill" cx="22" cy="22" r="19" stroke-dasharray="119.4" stroke-dashoffset="119.4"/>
+          </svg>
+          <svg class="mode-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+            <rect x="2" y="5" width="20" height="14" rx="2"/>
+            <polygon points="10,9 16,12 10,15" fill="currentColor"/>
+          </svg>
+          <span class="mode-btn-new-dot" hidden></span>
+          <div class="mode-btn-tip">
+            <div class="mode-btn-tip-title">Видео</div>
+            <div class="mode-btn-tip-meta">загрузка…</div>
+            <div class="mode-btn-tip-hint"></div>
+          </div>
+        </button>
+
+      </div>
+
+      <div class="mode-rail-bottom">
+        <button class="mode-back-btn" id="rail-back-btn" type="button" title="К списку мифов">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/>
+          </svg>
+        </button>
+      </div>
+    </aside>
+
     <nav class="sidebar" id="sidebar">
+      <div id="sb-action-slot"></div>
       <div class="sidebar-title">Сцены</div>
       <div id="scene-nav-list"></div>
     </nav>
@@ -162,6 +284,10 @@
     </div>
   </div>
   <div class="bottom-actions">
+    <button class="b-btn b-btn-publish" id="publish-btn" type="button" title="Пометить миф опубликованным (только визуально, ничего не блокируется)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12l5 5L20 7"/></svg>
+      <span id="publish-label">опубликован?</span>
+    </button>
     <button class="b-btn b-btn-primary" id="finalize-btn">
       <span id="finalize-label">Собрать финал</span>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>

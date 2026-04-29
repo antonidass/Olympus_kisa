@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "BOGI Flow Promptr",
+  "version": "0.1.0",
+  "description": "Помощник для копирования промптов в Google Flow и автораскладки скачанных zip-архивов по сценам.",
+  "permissions": ["sidePanel", "downloads", "storage", "clipboardWrite"],
+  "host_permissions": [
+    "http://127.0.0.1:5000/*",
+    "https://labs.google/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "BOGI Flow Promptr"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://labs.google/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Кисы Олимпа · вариант 05 · sb-action-slot</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=DM+Sans:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;1,9..144,300&display=swap" rel="stylesheet">
+<style>
+/*
+  ВАРИАНТ 05 · Action-slot в сайдбаре
+  В существующем шаблоне review-view есть пустой <div id="sb-action-slot">
+  на самом верху сайдбара (перед списком сцен). Сюда селим компактную
+  кнопку «опубликован» — это место уже зарезервировано в коде.
+  Та же мини-кнопка появляется и в hub-list-panel под фильтрами,
+  если выбран сценарий — единая компонента.
+
+  В списке: glow-точка слева от номера + status chip "опуб." (повторяет
+  логику nav-approved-badge в существующем сайдбаре сцен — оранжевая
+  точка с свечением).
+*/
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0c0c0e; --bg-sidebar:#101012; --bg-panel:#141418; --bg-card:#1a1a20; --bg-hover:#1e1e26;
+  --border:#222228; --border-hover:#33333c;
+  --text:#dddad5; --text-dim:#777580; --text-ghost:#444250;
+  --blue:#5b8af5; --blue-dim:#5b8af518; --blue-glow:#5b8af530;
+  --green:#3dd68c; --green-dim:#3dd68c18;
+  --red:#f55b5b; --red-dim:#f55b5b18;
+  --orange:#f5a623; --orange-dim:#f5a62318; --orange-glow:#f5a62330; --orange-deep:#b6781a; --orange-hi:#ffc966;
+  --font-mono:'IBM Plex Mono',monospace; --font-sans:'DM Sans',sans-serif; --font-display:'Fraunces',serif;
+}
+html{font-size:14px}
+body{background:var(--bg);color:var(--text);font-family:var(--font-sans);min-height:100vh;display:grid;grid-template-rows:auto auto 1fr auto}
+
+.demo-label{background:#0a0a0c;border-bottom:1px solid var(--border);padding:10px 24px;display:flex;justify-content:space-between;align-items:center;font-family:var(--font-mono);font-size:.7rem;letter-spacing:.18em;text-transform:uppercase;color:var(--text-ghost)}
+.demo-label b{color:var(--orange);font-weight:500}
+
+.topbar{background:var(--bg);border-bottom:1px solid var(--border);padding:12px 24px;display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:16px}
+.topbar-left{display:flex;align-items:center;gap:20px}
+.brand{font-family:var(--font-mono);font-size:.7rem;font-weight:500;letter-spacing:.2em;text-transform:uppercase;color:var(--blue);padding:4px 8px;margin-left:-8px;border-radius:4px}
+.crumb-link{color:var(--text);font-weight:600;padding:3px 8px;border-radius:4px;margin-left:-8px;font-size:.85rem}
+.search{display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--bg-panel);border:1px solid var(--border);border-radius:6px;color:var(--text-dim)}
+.search input{background:transparent;border:none;outline:none;color:var(--text);font-family:var(--font-sans);font-size:.78rem;width:160px}
+
+.hub{display:grid;grid-template-columns:340px 1fr;height:100%;overflow:hidden}
+.hub-list-panel{background:var(--bg-sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column}
+.hub-list-header{padding:18px 20px 14px;display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--border)}
+.hub-list-title{font-family:var(--font-display);font-weight:400;font-size:1.15rem}
+.hub-list-count{font-family:var(--font-mono);font-size:.66rem;letter-spacing:.18em;color:var(--text-ghost)}
+.hub-list-filter{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.hub-chip{font-family:var(--font-mono);font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;padding:5px 10px;border-radius:3px;background:transparent;border:1px solid var(--border);color:var(--text-dim);cursor:pointer}
+.hub-chip.active{background:var(--blue-dim);border-color:var(--blue);color:var(--blue)}
+.hub-chip.published-chip.active{background:var(--orange-dim);border-color:var(--orange);color:var(--orange)}
+.hub-list-items{padding:8px 12px;overflow-y:auto;flex:1}
+
+.hub-item{display:grid;grid-template-columns:32px 1fr auto;gap:12px;align-items:center;padding:13px 16px;border:1px solid transparent;border-radius:6px;cursor:pointer;transition:all .18s;margin-bottom:4px;position:relative}
+.hub-item:hover{background:var(--bg-card);border-color:var(--border)}
+.hub-item.active{background:var(--bg-card);border-color:var(--blue);box-shadow:0 0 0 1px var(--blue),0 4px 20px var(--blue-glow)}
+.hub-item.active::before{content:'';position:absolute;left:-12px;top:12px;bottom:12px;width:2px;background:var(--blue)}
+
+.hub-item-num{
+  font-family:var(--font-mono);font-size:.8rem;color:var(--text-ghost);text-align:center;
+  font-variant-numeric:tabular-nums;position:relative
+}
+.hub-item-name{font-size:.92rem;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hub-item-sub{font-family:var(--font-mono);font-size:.68rem;color:var(--text-ghost);margin-top:3px;letter-spacing:.04em}
+
+/* СУТЬ ВАРИАНТА 5 в списке: glow-точка как у nav-approved-badge —
+   повторяем логику уже существующего паттерна */
+.hub-item.status-published .hub-item-num{color:var(--orange)}
+.hub-item.status-published .hub-item-num::before{
+  content:'';position:absolute;left:-2px;top:50%;transform:translateY(-50%);
+  width:6px;height:6px;border-radius:50%;background:var(--orange);
+  box-shadow:0 0 8px var(--orange);
+  filter:drop-shadow(0 0 4px rgba(245,166,35,.5))
+}
+
+.hub-item-status{font-family:var(--font-mono);font-size:.6rem;letter-spacing:.12em;text-transform:uppercase;padding:3px 8px;border-radius:3px;flex-shrink:0;white-space:nowrap}
+.hub-item-status.in_progress{background:var(--blue-dim);color:var(--blue)}
+.hub-item-status.ready{background:var(--green-dim);color:var(--green)}
+.hub-item-status.new{background:var(--bg);color:var(--text-dim);border:1px solid var(--border)}
+.hub-item-status.published{background:var(--orange-dim);color:var(--orange);border:1px solid var(--orange-deep)}
+
+.hub-detail-panel{overflow-y:auto;padding:48px 60px 60px;background:radial-gradient(ellipse at 100% 0%,rgba(91,138,245,.05),transparent 55%),var(--bg)}
+.hub-dp-eyebrow{font-family:var(--font-mono);font-size:.7rem;letter-spacing:.22em;text-transform:uppercase;color:var(--blue);margin-bottom:16px;display:flex;align-items:center;gap:14px}
+.hub-dp-eyebrow::before{content:'';width:28px;height:1px;background:var(--blue)}
+.hub-dp-eyebrow .dossier-id{color:var(--text-ghost);margin-left:auto;letter-spacing:.14em}
+
+.hub-dp-title{font-family:var(--font-display);font-weight:300;font-size:4.4rem;line-height:1;letter-spacing:-.025em;color:var(--text);margin-bottom:12px;font-variation-settings:"opsz" 96}
+.hub-dp-title em{font-style:italic;color:var(--text-dim);font-weight:300}
+.hub-dp-subtitle{font-family:var(--font-display);font-style:italic;font-size:1.15rem;font-weight:300;color:var(--text-dim);max-width:620px;line-height:1.55;margin-bottom:36px}
+
+.hub-dp-stats{display:grid;grid-template-columns:repeat(4,1fr);margin-bottom:32px;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.hub-dp-stat{padding:18px 22px;background:var(--bg-panel);border-right:1px solid var(--border)}
+.hub-dp-stat:last-child{border-right:none}
+.hub-dp-stat-label{font-family:var(--font-mono);font-size:.6rem;letter-spacing:.18em;text-transform:uppercase;color:var(--text-ghost);margin-bottom:10px}
+.hub-dp-stat-value{font-family:var(--font-mono);font-size:1.7rem;font-weight:400;color:var(--text);line-height:1;font-variant-numeric:tabular-nums}
+.hub-dp-stat-value .unit{font-size:.8rem;color:var(--text-ghost);margin-left:4px}
+.hub-dp-stat.accent .hub-dp-stat-value{color:var(--blue)}
+.hub-dp-stat.good .hub-dp-stat-value{color:var(--green)}
+
+.hub-dp-progress{margin-bottom:32px}
+.hub-dp-progress-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px}
+.hub-dp-progress-label{font-family:var(--font-mono);font-size:.68rem;letter-spacing:.2em;text-transform:uppercase;color:var(--text-dim)}
+.hub-dp-progress-pct{font-family:var(--font-mono);font-size:.82rem;color:var(--text)}
+.hub-dp-bar{height:6px;background:var(--border);border-radius:3px;overflow:hidden;position:relative}
+.hub-dp-bar-fill{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--green),#64e3a3)}
+
+.hub-dp-scenes-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px}
+.hub-dp-scenes-title{font-family:var(--font-mono);font-size:.7rem;letter-spacing:.2em;text-transform:uppercase;color:var(--text-dim)}
+.hub-dp-legend{display:flex;gap:14px;font-family:var(--font-mono);font-size:.64rem;color:var(--text-ghost)}
+.hub-dp-legend span{display:flex;align-items:center;gap:5px}
+.hub-dp-legend .dot{width:8px;height:8px;border-radius:2px}
+.hub-dp-legend .dot.done{background:var(--green)}
+.hub-dp-legend .dot.pending{background:var(--border)}
+.hub-dp-scenes{display:grid;grid-template-columns:repeat(auto-fill,minmax(44px,1fr));gap:6px;margin-bottom:36px}
+.hub-scene-tile{aspect-ratio:1;border:1px solid var(--border);border-radius:4px;background:var(--bg-panel);display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:.68rem;color:var(--text-ghost);font-variant-numeric:tabular-nums}
+.hub-scene-tile.done{background:var(--green-dim);border-color:rgba(61,214,140,.3);color:var(--green)}
+
+.hub-dp-cta{display:flex;gap:12px;align-items:center;padding:22px 26px;background:var(--bg-panel);border:1px solid var(--border);border-radius:10px}
+.hub-dp-cta-text{flex:1;font-size:.88rem;color:var(--text-dim);line-height:1.45}
+.hub-dp-cta-text b{color:var(--text);font-weight:500}
+.hub-btn{font-family:var(--font-mono);font-size:.74rem;letter-spacing:.08em;font-weight:500;padding:11px 22px;border-radius:6px;cursor:pointer;border:1px solid;display:flex;align-items:center;gap:10px;white-space:nowrap;transition:all .2s}
+.hub-btn-primary{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600}
+
+/* ─── СУТЬ ВАРИАНТА 5: единая компонента publish-card ───
+   Живёт и в hub-list-panel (под фильтрами для выбранного мифа),
+   и в sb-action-slot review-view (над списком сцен) */
+.publish-card{
+  margin:10px 12px 6px;padding:11px 14px;
+  background:var(--bg-card);
+  border:1px solid var(--border);border-radius:6px;
+  display:flex;align-items:center;gap:12px;cursor:pointer;
+  transition:all .2s
+}
+.publish-card:hover{border-color:var(--border-hover);background:var(--bg-hover)}
+.publish-card-icon{
+  width:28px;height:28px;border-radius:50%;
+  background:var(--bg-panel);border:1px solid var(--border);
+  display:grid;place-items:center;
+  color:var(--text-dim);flex-shrink:0;
+  transition:all .2s
+}
+.publish-card-icon svg{width:14px;height:14px}
+.publish-card-text{flex:1;min-width:0;line-height:1.3}
+.publish-card-label{
+  font-family:var(--font-mono);font-size:.58rem;
+  letter-spacing:.18em;text-transform:uppercase;color:var(--text-ghost);
+  margin-bottom:2px
+}
+.publish-card-value{
+  font-size:.82rem;color:var(--text-dim);font-weight:500
+}
+.publish-card-mini-toggle{
+  width:26px;height:14px;border-radius:100px;background:var(--border);
+  position:relative;flex-shrink:0;transition:background .2s
+}
+.publish-card-mini-toggle::after{
+  content:'';position:absolute;width:10px;height:10px;border-radius:50%;
+  background:var(--text-dim);top:2px;left:2px;transition:all .2s ease
+}
+
+.publish-card.is-on{
+  background:linear-gradient(180deg,rgba(245,166,35,.08),transparent 80%),var(--bg-card);
+  border-color:var(--orange-deep)
+}
+.publish-card.is-on .publish-card-icon{
+  background:var(--orange);border-color:var(--orange);color:#0c0c0e;
+  box-shadow:0 0 12px var(--orange-glow)
+}
+.publish-card.is-on .publish-card-label{color:var(--orange-deep)}
+.publish-card.is-on .publish-card-value{color:var(--orange-hi)}
+.publish-card.is-on .publish-card-mini-toggle{background:var(--orange)}
+.publish-card.is-on .publish-card-mini-toggle::after{left:14px;background:#0c0c0e}
+
+.bottombar{background:var(--bg-sidebar);border-top:1px solid var(--border);padding:12px 24px;display:flex;justify-content:space-between;align-items:center}
+.bottom-stats{display:flex;gap:24px}
+.bstat{display:flex;align-items:center;gap:8px;font-family:var(--font-mono);font-size:.7rem;color:var(--text-dim)}
+.bstat-icon{width:8px;height:8px;border-radius:50%}
+.bstat-icon.g{background:var(--green)}
+.bstat-icon.o{background:var(--text-ghost)}
+.bstat-icon.r{background:var(--red)}
+.bstat-num{color:var(--text);font-weight:500}
+.b-btn{font-family:var(--font-mono);font-size:.72rem;letter-spacing:.08em;font-weight:500;padding:10px 18px;border-radius:6px;border:1px solid;cursor:pointer;display:flex;align-items:center;gap:8px}
+.b-btn-primary{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600}
+
+.review-section{background:#0a0a0c;border-top:1px solid var(--border);padding:32px 40px 40px}
+.review-section-title{font-family:var(--font-mono);font-size:.7rem;letter-spacing:.2em;text-transform:uppercase;color:var(--text-ghost);margin-bottom:18px;display:flex;align-items:center;gap:14px}
+.review-section-title::before{content:'';width:28px;height:1px;background:var(--orange)}
+.review-section-title b{color:var(--orange);font-weight:500}
+
+.review-mini{display:grid;grid-template-columns:60px 280px 1fr;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg);max-width:1100px;min-height:340px}
+.mode-rail{background:#0a0a0c;border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;padding:14px 0;gap:10px}
+.mode-btn{width:42px;height:42px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--text-dim);cursor:pointer;display:grid;place-items:center}
+.mode-btn.active{background:var(--blue-dim);border-color:var(--blue);color:var(--blue)}
+.mode-btn svg{width:18px;height:18px}
+.review-sidebar{background:var(--bg-sidebar);border-right:1px solid var(--border);padding:8px;display:flex;flex-direction:column}
+.sb-action-slot{padding:0}
+.sidebar-title{font-family:var(--font-mono);font-size:.65rem;letter-spacing:.15em;text-transform:uppercase;color:var(--text-ghost);padding:12px 12px 8px}
+.scene-nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:6px;border:1px solid transparent;margin-bottom:2px}
+.nav-indicator{width:8px;height:8px;border-radius:50%;background:var(--text-ghost)}
+.scene-nav-item.done .nav-indicator{background:var(--green);box-shadow:0 0 6px var(--green-dim)}
+.nav-num{font-family:var(--font-mono);font-size:.7rem;color:var(--text-ghost);min-width:56px}
+.nav-text{font-size:.8rem;color:var(--text-dim);flex:1}
+
+.review-main{padding:24px 28px;background:var(--bg)}
+.r-title{font-family:var(--font-display);font-weight:300;font-size:1.6rem;color:var(--text);margin-bottom:14px}
+.r-title em{font-style:italic;color:var(--text-dim)}
+</style>
+</head>
+<body>
+
+<div class="demo-label">
+  <span>вариант 05 / 5 — единая <b>publish-card</b> в хабе под фильтрами и в sb-action-slot ревью</span>
+  <span>в списке — <b>точка с свечением</b> у номера (как у nav-approved-badge)</span>
+</div>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <a class="brand" href="#">Кисы Олимпа</a>
+    <div><a class="crumb-link" href="#">Ревью озвучки</a></div>
+  </div>
+  <div></div>
+  <div class="search">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+    <input placeholder="поиск мифа…">
+  </div>
+</div>
+
+<div class="hub">
+  <aside class="hub-list-panel">
+    <div class="hub-list-header">
+      <div class="hub-list-title">Мифы</div>
+      <div class="hub-list-count">14</div>
+    </div>
+    <div class="hub-list-filter">
+      <button class="hub-chip active">все</button>
+      <button class="hub-chip">в работе</button>
+      <button class="hub-chip">готовы</button>
+      <button class="hub-chip">новые</button>
+      <button class="hub-chip published-chip">опубл.</button>
+    </div>
+
+    <!-- ─── СУТЬ ВАРИАНТА 5: publish-card сразу под фильтрами ─── -->
+    <div class="publish-card is-on" title="кликните чтобы переключить">
+      <div class="publish-card-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12l5 5L20 7"/></svg>
+      </div>
+      <div class="publish-card-text">
+        <div class="publish-card-label">«икар и дедал»</div>
+        <div class="publish-card-value">опубликован · 21 апр</div>
+      </div>
+      <div class="publish-card-mini-toggle"></div>
+    </div>
+
+    <div class="hub-list-items">
+      <div class="hub-item status-published">
+        <div class="hub-item-num">01</div>
+        <div class="hub-item-body">
+          <div class="hub-item-name">Пандора</div>
+          <div class="hub-item-sub">25 сцен · 18 апр</div>
+        </div>
+        <div class="hub-item-status published">опуб.</div>
+      </div>
+      <div class="hub-item active status-published">
+        <div class="hub-item-num">02</div>
+        <div class="hub-item-body">
+          <div class="hub-item-name">Икар и Дедал</div>
+          <div class="hub-item-sub">22 сцены · 21 апр</div>
+        </div>
+        <div class="hub-item-status published">опуб.</div>
+      </div>
+      <div class="hub-item status-published">
+        <div class="hub-item-num">03</div>
+        <div class="hub-item-body">
+          <div class="hub-item-name">Тесей и Минотавр</div>
+          <div class="hub-item-sub">23 сцены · 23 апр</div>
+        </div>
+        <div class="hub-item-status published">опуб.</div>
+      </div>
+      <div class="hub-item">
+        <div class="hub-item-num">04</div>
+        <div class="hub-item-body">
+          <div class="hub-item-name">Сизифов труд</div>
+          <div class="hub-item-sub">21 сцена · готов к сборке</div>
+        </div>
+        <div class="hub-item-status ready">готов</div>
+      </div>
+      <div class="hub-item">
+        <div class="hub-item-num">05</div>
+        <div class="hub-item-body">
+          <div class="hub-item-name">Мидас и золото</div>
+          <div class="hub-item-sub">24 сцены · 18 / 24</div>
+        </div>
+        <div class="hub-item-status in_progress">в работе</div>
+      </div>
+      <div class="hub-item">
+        <div class="hub-item-num">06</div>
+        <div class="hub-item-body">
+          <div class="hub-item-name">Орфей и Эвридика</div>
+          <div class="hub-item-sub">26 сцен · не начат</div>
+        </div>
+        <div class="hub-item-status new">нов.</div>
+      </div>
+      <div class="hub-item">
+        <div class="hub-item-num">07</div>
+        <div class="hub-item-body">
+          <div class="hub-item-name">Персефона и Аид</div>
+          <div class="hub-item-sub">22 сцены · не начат</div>
+        </div>
+        <div class="hub-item-status new">нов.</div>
+      </div>
+    </div>
+  </aside>
+
+  <main class="hub-detail-panel">
+    <div class="hub-dp-eyebrow">досье · миф №02 <span class="dossier-id">DAEDALUS · v1.4</span></div>
+    <h1 class="hub-dp-title">Икар и <em>Дедал</em></h1>
+    <div class="hub-dp-subtitle">мастер выковал крылья, чтобы вырваться с критского острова — а сын забыл всё, что отец говорил, и подлетел слишком близко к солнцу.</div>
+
+    <div class="hub-dp-stats">
+      <div class="hub-dp-stat accent"><div class="hub-dp-stat-label">сцен</div><div class="hub-dp-stat-value">22</div></div>
+      <div class="hub-dp-stat good"><div class="hub-dp-stat-label">готово</div><div class="hub-dp-stat-value">22<span class="unit">/ 22</span></div></div>
+      <div class="hub-dp-stat"><div class="hub-dp-stat-label">длительность</div><div class="hub-dp-stat-value">61<span class="unit">сек</span></div></div>
+      <div class="hub-dp-stat"><div class="hub-dp-stat-label">опубликован</div><div class="hub-dp-stat-value" style="font-size:1.1rem;color:var(--orange)">21 апр</div></div>
+    </div>
+
+    <div class="hub-dp-progress">
+      <div class="hub-dp-progress-head">
+        <div class="hub-dp-progress-label">прогресс</div>
+        <div class="hub-dp-progress-pct">100%</div>
+      </div>
+      <div class="hub-dp-bar"><div class="hub-dp-bar-fill" style="width:100%"></div></div>
+    </div>
+
+    <div class="hub-dp-scenes-head">
+      <div class="hub-dp-scenes-title">сцены</div>
+      <div class="hub-dp-legend">
+        <span><span class="dot done"></span>готово</span>
+      </div>
+    </div>
+    <div class="hub-dp-scenes">
+      <div class="hub-scene-tile done">01</div><div class="hub-scene-tile done">02</div>
+      <div class="hub-scene-tile done">03</div><div class="hub-scene-tile done">04</div>
+      <div class="hub-scene-tile done">05</div><div class="hub-scene-tile done">06</div>
+      <div class="hub-scene-tile done">07</div><div class="hub-scene-tile done">08</div>
+      <div class="hub-scene-tile done">09</div><div class="hub-scene-tile done">10</div>
+      <div class="hub-scene-tile done">11</div><div class="hub-scene-tile done">12</div>
+      <div class="hub-scene-tile done">13</div><div class="hub-scene-tile done">14</div>
+      <div class="hub-scene-tile done">15</div><div class="hub-scene-tile done">16</div>
+      <div class="hub-scene-tile done">17</div><div class="hub-scene-tile done">18</div>
+      <div class="hub-scene-tile done">19</div><div class="hub-scene-tile done">20</div>
+      <div class="hub-scene-tile done">21</div><div class="hub-scene-tile done">22</div>
+    </div>
+
+    <div class="hub-dp-cta">
+      <div class="hub-dp-cta-text">все сцены готовы. <b>миф уже опубликован</b> — переключатель в шапке списка слева.</div>
+      <button class="hub-btn hub-btn-primary">пересобрать финал</button>
+    </div>
+  </main>
+</div>
+
+<div class="bottombar">
+  <div class="bottom-stats">
+    <div class="bstat"><div class="bstat-icon g"></div><span>выбрано</span><span class="bstat-num">22</span></div>
+    <div class="bstat"><div class="bstat-icon o"></div><span>ожидает</span><span class="bstat-num">0</span></div>
+    <div class="bstat"><div class="bstat-icon r"></div><span>перегенерация</span><span class="bstat-num">0</span></div>
+  </div>
+  <div><button class="b-btn b-btn-primary">пересобрать финал →</button></div>
+</div>
+
+<div class="review-section">
+  <div class="review-section-title">в ревью — та же publish-card в <b>sb-action-slot</b> над списком сцен</div>
+  <div class="review-mini">
+    <aside class="mode-rail">
+      <button class="mode-btn active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg></button>
+      <button class="mode-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></button>
+      <button class="mode-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="5" width="20" height="14" rx="2"/><polygon points="10,9 16,12 10,15" fill="currentColor"/></svg></button>
+    </aside>
+    <nav class="review-sidebar">
+      <!-- sb-action-slot — здесь живёт publish-card в режиме ревью -->
+      <div class="sb-action-slot">
+        <div class="publish-card is-on">
+          <div class="publish-card-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12l5 5L20 7"/></svg>
+          </div>
+          <div class="publish-card-text">
+            <div class="publish-card-label">миф</div>
+            <div class="publish-card-value">опубликован · 21 апр</div>
+          </div>
+          <div class="publish-card-mini-toggle"></div>
+        </div>
+      </div>
+      <div class="sidebar-title">сцены · 22 / 22</div>
+      <div class="scene-nav-item done"><span class="nav-indicator"></span><span class="nav-num">scene_001</span><span class="nav-text">мастер у наковальни</span></div>
+      <div class="scene-nav-item done"><span class="nav-indicator"></span><span class="nav-num">scene_002</span><span class="nav-text">примерка крыльев</span></div>
+      <div class="scene-nav-item done"><span class="nav-indicator"></span><span class="nav-num">scene_003</span><span class="nav-text">старт с башни</span></div>
+      <div class="scene-nav-item done"><span class="nav-indicator"></span><span class="nav-num">scene_004</span><span class="nav-text">полёт над морем</span></div>
+      <div class="scene-nav-item done"><span class="nav-indicator"></span><span class="nav-num">scene_005</span><span class="nav-text">слишком высоко</span></div>
+    </nav>
+    <main class="review-main">
+      <div class="r-title">scene_005 · <em>слишком высоко</em></div>
+      <div style="font-family:var(--font-mono);font-size:.72rem;color:var(--text-ghost);letter-spacing:.1em;text-transform:uppercase">… интерфейс ревью озвучки …</div>
+    </main>
+  </div>
+</div>
+
+</body>
+</html>

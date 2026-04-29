@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Кисы Олимпа · Лавровый венок</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=DM+Sans:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;1,9..144,300;1,9..144,400&display=swap" rel="stylesheet">
+<style>
+/*
+  ВАРИАНТ 3 · «Лавровый венок»
+  Концепция: тематический под бренд «Кисы Олимпа». Опубликованный
+  миф «увенчан лаврами» — это олимпийский ритуал. Венок физически
+  обхватывает номер мифа в карточке списка, появляется крупно вокруг
+  заголовка в детальке. Кнопка действия — золотая, с двумя лавровыми
+  ветвями, с лёгким сияющим градиентом.
+  Гамма: глубокий олимпийский золотой (#d4a93a → #ffd980) + пыльно-
+  оливковый (#7d8e54). Шрифт-акцент — Fraunces.
+*/
+
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+
+:root {
+  --bg: #0a0a0c;
+  --bg-sidebar: #0e0e10;
+  --bg-panel: #131318;
+  --bg-card: #18181f;
+  --bg-hover: #1d1d24;
+  --border: #222228;
+  --border-hi: #33333c;
+  --text: #ddd9d2;
+  --text-dim: #777580;
+  --text-ghost: #444250;
+  --blue: #5b8af5;
+  --blue-dim: #5b8af518;
+  --green: #3dd68c;
+  --green-dim: #3dd68c18;
+  --red: #f55b5b;
+  /* Олимпийское золото */
+  --gold: #d4a93a;
+  --gold-hi: #ffd980;
+  --gold-deep: #8a6a1d;
+  --gold-dim: #d4a93a14;
+  --gold-glow: #d4a93a40;
+  --olive: #7d8e54;
+  --font-mono: 'IBM Plex Mono', monospace;
+  --font-sans: 'DM Sans', sans-serif;
+  --font-display: 'Fraunces', serif;
+}
+
+html { font-size: 14px; }
+
+body {
+  background:
+    radial-gradient(circle at 50% -10%, rgba(212,169,58,.07) 0%, transparent 50%),
+    radial-gradient(circle at 100% 100%, rgba(125,142,84,.05) 0%, transparent 60%),
+    var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+  padding: 32px;
+  position: relative;
+}
+
+/* Тонкая «звёздная пыль» по фону */
+body::before {
+  content:''; position: fixed; inset: 0;
+  background-image:
+    radial-gradient(1px 1px at 20% 30%, rgba(255,217,128,.25), transparent),
+    radial-gradient(1px 1px at 70% 60%, rgba(255,217,128,.18), transparent),
+    radial-gradient(1px 1px at 40% 80%, rgba(255,217,128,.2), transparent),
+    radial-gradient(1px 1px at 85% 20%, rgba(255,217,128,.15), transparent),
+    radial-gradient(1px 1px at 10% 90%, rgba(255,217,128,.2), transparent),
+    radial-gradient(1px 1px at 60% 10%, rgba(255,217,128,.15), transparent);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.shell { max-width: 1480px; margin: 0 auto; position: relative; z-index: 2; }
+
+/* ─── ЗАГОЛОВОК МАКЕТА ─── */
+.demo-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin-bottom: 28px; padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+.demo-head-title {
+  font-family: var(--font-display);
+  font-style: italic; font-weight: 300;
+  font-size: 1.6rem; color: var(--text);
+}
+.demo-head-title em {
+  background: linear-gradient(180deg, var(--gold-hi), var(--gold));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  font-style: italic;
+}
+.demo-head-meta {
+  font-family: var(--font-mono); font-size: 0.7rem;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--text-ghost);
+}
+.demo-head-meta b { color: var(--gold); font-weight: 500; }
+
+/* ─── ГРИД ─── */
+.grid {
+  display: grid;
+  grid-template-columns: 360px 1fr 320px;
+  gap: 24px;
+  align-items: start;
+}
+
+/* ── СПИСОК ── */
+.list {
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.list-head {
+  padding: 16px 18px 12px;
+  display: flex; justify-content: space-between; align-items: baseline;
+  border-bottom: 1px solid var(--border);
+}
+.list-head-title {
+  font-family: var(--font-display); font-weight: 400;
+  font-size: 1.1rem; letter-spacing: -0.01em;
+}
+.list-head-count {
+  font-family: var(--font-mono); font-size: 0.65rem;
+  letter-spacing: 0.18em; color: var(--text-ghost);
+}
+.list-filter {
+  display: flex; gap: 6px; padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.chip {
+  font-family: var(--font-mono); font-size: 0.6rem;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 5px 9px; border-radius: 3px;
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text-dim); cursor: pointer;
+  transition: all .15s;
+}
+.chip:hover { border-color: var(--border-hi); color: var(--text); }
+.chip.active { background: var(--blue-dim); border-color: var(--blue); color: var(--blue); }
+.chip.gold-chip.active {
+  background: var(--gold-dim); border-color: var(--gold); color: var(--gold);
+}
+
+.list-items { padding: 8px 10px 14px; }
+
+.item {
+  position: relative;
+  display: grid; grid-template-columns: 36px 1fr auto;
+  gap: 12px; align-items: center;
+  padding: 13px 16px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  cursor: pointer;
+  transition: all .18s;
+}
+.item:hover { background: var(--bg-card); border-color: var(--border); }
+.item-num-wrap {
+  position: relative;
+  width: 32px; height: 32px;
+  display: grid; place-items: center;
+}
+.item-num {
+  font-family: var(--font-mono); font-size: 0.8rem;
+  color: var(--text-ghost);
+  font-variant-numeric: tabular-nums;
+}
+.item-name {
+  font-size: 0.92rem; font-weight: 500; color: var(--text);
+}
+.item-sub {
+  font-family: var(--font-mono); font-size: 0.66rem;
+  color: var(--text-ghost); margin-top: 3px; letter-spacing: 0.04em;
+}
+.item-status {
+  font-family: var(--font-mono); font-size: 0.58rem;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 3px;
+}
+.item-status.in_progress { background: var(--blue-dim); color: var(--blue); }
+.item-status.ready { background: var(--green-dim); color: var(--green); }
+.item-status.new { background: var(--bg); color: var(--text-dim); border:1px solid var(--border); }
+.item-status.crowned {
+  background: linear-gradient(180deg, rgba(255,217,128,.12), rgba(212,169,58,.06));
+  color: var(--gold-hi);
+  border: 1px solid var(--gold-deep);
+  font-style: italic;
+  font-family: var(--font-display);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  font-size: 0.72rem;
+  padding: 3px 10px;
+}
+
+/* СУТЬ варианта 3: маленький лавр обхватывает номер мифа */
+.item.crowned .item-num { color: var(--gold-hi); font-weight: 500; }
+.item.crowned .item-name {
+  background: linear-gradient(180deg, var(--gold-hi) 30%, var(--gold) 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.item.crowned .item-sub { color: var(--olive); }
+
+.mini-laurel {
+  position: absolute; inset: 0;
+  pointer-events: none;
+}
+
+.item.active {
+  background: var(--bg-card);
+  border-color: var(--gold);
+  box-shadow:
+    0 0 0 1px var(--gold-deep),
+    0 6px 28px rgba(212,169,58,.18);
+}
+.item.active::before {
+  content:''; position: absolute; left: -10px; top: 12px; bottom: 12px;
+  width: 2px; background: var(--gold);
+}
+
+/* ── ДЕТАЛКА ── */
+.detail {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 32px 36px;
+  position: relative;
+  overflow: hidden;
+  min-height: 620px;
+}
+
+.detail-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.62rem; letter-spacing: 0.22em;
+  text-transform: uppercase; color: var(--gold);
+  margin-bottom: 14px;
+}
+.detail-title {
+  font-family: var(--font-display);
+  font-weight: 300; font-size: 2.6rem;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.detail-title em {
+  font-style: italic; font-weight: 400;
+  color: var(--gold-hi);
+}
+.detail-sub {
+  font-family: var(--font-mono);
+  font-size: 0.7rem; letter-spacing: 0.1em;
+  color: var(--text-dim);
+  margin-bottom: 28px;
+}
+.detail-sub b { color: var(--text); font-weight: 500; }
+
+/* СУТЬ варианта 3: КРУПНЫЙ венок вокруг заголовка */
+.detail.is-crowned {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(212,169,58,.08), transparent 60%),
+    var(--bg-panel);
+  border-color: var(--gold-deep);
+  box-shadow: inset 0 1px 0 rgba(255,217,128,.05);
+}
+.detail-title-wreath {
+  position: relative;
+  display: inline-flex; align-items: center;
+  gap: 18px;
+  margin-bottom: 8px;
+}
+.detail-title-wreath .left-laurel,
+.detail-title-wreath .right-laurel {
+  width: 80px; height: 110px;
+  flex-shrink: 0;
+}
+.detail-title-wreath .left-laurel { transform: scaleX(-1); }
+.detail-title-wreath .detail-title { margin-bottom: 0; }
+.detail-title-wreath .detail-title em {
+  background: linear-gradient(180deg, var(--gold-hi), var(--gold));
+  -webkit-background-clip: text; background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 16px rgba(212,169,58,.3));
+}
+
+/* Прогресс по этапам */
+.stages {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 10px; margin-bottom: 28px;
+}
+.stage {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 14px 12px;
+}
+.stage-icon {
+  width: 22px; height: 22px; color: var(--text-ghost);
+  margin-bottom: 8px;
+}
+.stage-name {
+  font-family: var(--font-mono); font-size: 0.62rem;
+  letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--text-dim); margin-bottom: 6px;
+}
+.stage-val {
+  font-family: var(--font-display); font-style: italic;
+  font-weight: 300; font-size: 1.4rem; color: var(--text);
+}
+.stage-val small {
+  font-family: var(--font-mono); font-size: 0.7rem;
+  color: var(--text-ghost); font-style: normal;
+  margin-left: 4px;
+}
+.stage.done .stage-icon { color: var(--green); }
+.stage.done .stage-val { color: var(--green); }
+.detail.is-crowned .stage.done .stage-icon { color: var(--gold); }
+.detail.is-crowned .stage.done .stage-val { color: var(--gold-hi); }
+.detail.is-crowned .stage { border-color: rgba(212,169,58,.25); }
+
+.detail-scenes-title {
+  font-family: var(--font-mono); font-size: 0.62rem;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+  display: flex; align-items: baseline; justify-content: space-between;
+}
+.detail-scenes-title b { color: var(--gold); }
+.scene-tiles {
+  display: grid; grid-template-columns: repeat(8, 1fr);
+  gap: 4px; margin-bottom: 32px;
+}
+.tile {
+  aspect-ratio: 1; border-radius: 3px;
+  background: var(--border);
+}
+.tile.done { background: var(--green); }
+.tile.crowned {
+  background: linear-gradient(135deg, var(--gold-hi), var(--gold-deep));
+}
+.tile.regen { background: var(--red); }
+
+/* ─── ГЛАВНОЕ: КНОПКА «УВЕНЧАТЬ ЛАВРАМИ» ─── */
+.crown-action {
+  display: flex; gap: 14px; align-items: stretch;
+  margin-top: 28px;
+}
+.btn-crown {
+  flex: 1;
+  position: relative;
+  padding: 18px 26px 18px 22px;
+  background:
+    linear-gradient(135deg, rgba(212,169,58,.14) 0%, rgba(212,169,58,.04) 100%),
+    var(--bg-card);
+  border: 1px solid var(--gold-deep);
+  border-radius: 6px;
+  display: flex; align-items: center; gap: 18px;
+  cursor: pointer;
+  transition: all .25s;
+  text-align: left;
+  overflow: hidden;
+}
+.btn-crown::after {
+  content:''; position: absolute;
+  top: 0; left: -50%; width: 40%; height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,217,128,.14), transparent);
+  transform: skewX(-20deg);
+  transition: left .8s ease;
+}
+.btn-crown:hover::after { left: 130%; }
+.btn-crown:hover {
+  background:
+    linear-gradient(135deg, rgba(212,169,58,.22) 0%, rgba(212,169,58,.08) 100%),
+    var(--bg-card);
+  border-color: var(--gold);
+  box-shadow:
+    0 0 0 1px var(--gold-deep),
+    0 10px 36px rgba(212,169,58,.18);
+}
+.btn-crown-laurel {
+  width: 50px; height: 50px;
+  flex-shrink: 0; color: var(--gold);
+}
+.btn-crown-text { flex: 1; min-width: 0; position: relative; z-index: 2; }
+.btn-crown-eyebrow {
+  font-family: var(--font-mono); font-size: 0.58rem;
+  letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--gold); margin-bottom: 5px;
+}
+.btn-crown-title {
+  font-family: var(--font-display); font-style: italic;
+  font-weight: 400; font-size: 1.4rem; color: var(--gold-hi);
+  line-height: 1.05;
+}
+.btn-crown-desc {
+  font-size: 0.74rem; color: var(--text-dim);
+  margin-top: 4px;
+}
+.btn-crown-arrow {
+  font-family: var(--font-display); font-size: 1.6rem;
+  color: var(--gold); flex-shrink: 0;
+  transition: transform .25s;
+  position: relative; z-index: 2;
+}
+.btn-crown:hover .btn-crown-arrow { transform: translateX(6px); }
+
+.btn-decrown {
+  flex: 1;
+  padding: 14px 20px;
+  background: transparent;
+  border: 1px dashed var(--gold-deep);
+  border-radius: 6px;
+  color: var(--olive);
+  font-family: var(--font-mono);
+  font-size: 0.68rem; letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all .2s;
+}
+.btn-decrown:hover {
+  border-color: var(--gold); color: var(--gold);
+}
+
+/* ── ПРАВО: РЕВЬЮ-ФРАГМЕНТ ── */
+.review-frag {
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.frag-head {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.frag-head-eyebrow {
+  font-family: var(--font-mono); font-size: 0.58rem;
+  letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--text-ghost); margin-bottom: 6px;
+}
+.frag-head-title {
+  font-family: var(--font-display); font-style: italic;
+  font-weight: 400; font-size: 1.05rem;
+  display: flex; align-items: center; gap: 8px;
+}
+/* Маленький лавровый значок у имени мифа */
+.frag-head-laurel { width: 16px; height: 16px; color: var(--gold); }
+
+.frag-crumb {
+  display: flex; align-items: center; gap: 6px; margin-top: 4px;
+  font-family: var(--font-mono); font-size: 0.6rem;
+  letter-spacing: 0.1em; color: var(--text-dim);
+}
+.frag-crumb b { color: var(--gold); font-weight: 500; }
+
+.frag-sb { display: flex; min-height: 380px; }
+.frag-rail {
+  width: 44px; padding: 12px 0;
+  display: flex; flex-direction: column; gap: 8px; align-items: center;
+  border-right: 1px solid var(--border);
+}
+.rail-btn {
+  width: 32px; height: 32px;
+  border-radius: 6px;
+  display: grid; place-items: center;
+  background: transparent; border: 1px solid transparent;
+  color: var(--text-dim); cursor: pointer;
+}
+.rail-btn.active { background: var(--blue-dim); color: var(--blue); border-color: var(--blue); }
+.rail-btn svg { width: 14px; height: 14px; }
+
+.frag-body { flex: 1; padding: 12px 14px; }
+
+/* Мини-кнопка «увенчать» в сайдбаре ревью */
+.sb-crown {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  background:
+    linear-gradient(135deg, rgba(212,169,58,.1) 0%, rgba(212,169,58,.02) 100%),
+    var(--bg-card);
+  border: 1px solid var(--gold-deep);
+  border-radius: 6px;
+  display: flex; align-items: center; gap: 10px;
+  cursor: pointer;
+  transition: all .2s;
+  position: relative;
+  overflow: hidden;
+}
+.sb-crown:hover {
+  background:
+    linear-gradient(135deg, rgba(212,169,58,.18) 0%, rgba(212,169,58,.05) 100%),
+    var(--bg-card);
+  border-color: var(--gold);
+}
+.sb-crown-laurel { width: 22px; height: 22px; color: var(--gold); flex-shrink: 0; }
+.sb-crown-text {
+  font-family: var(--font-display); font-style: italic;
+  font-size: 0.85rem; color: var(--gold-hi);
+  line-height: 1.1;
+}
+.sb-crown-text small {
+  display: block;
+  font-family: var(--font-mono); font-style: normal;
+  font-size: 0.55rem; letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--olive); margin-top: 3px;
+}
+.sb-crown.crowned-state {
+  background:
+    linear-gradient(135deg, rgba(212,169,58,.18) 0%, rgba(212,169,58,.06) 100%),
+    var(--bg-card);
+  border-color: var(--gold);
+}
+
+.frag-body-title {
+  font-family: var(--font-mono); font-size: 0.6rem;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--text-ghost); margin-bottom: 8px;
+}
+
+.scene-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 9px; border-radius: 4px;
+  font-family: var(--font-mono); font-size: 0.7rem;
+  color: var(--text-dim);
+}
+.scene-row.done { color: var(--green); }
+.scene-row.dot::before {
+  content:''; width:6px; height:6px; border-radius: 50%;
+  background: currentColor; opacity: .7;
+}
+
+.demo-foot {
+  margin-top: 28px;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  color: var(--text-ghost);
+  text-align: center;
+  padding-top: 18px;
+  border-top: 1px dashed var(--border);
+}
+.demo-foot b {
+  background: linear-gradient(180deg, var(--gold-hi), var(--gold));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  font-weight: 500;
+}
+
+.section-sep {
+  margin: 40px 0 18px;
+  font-family: var(--font-display); font-style: italic;
+  font-weight: 300; font-size: 1.2rem;
+  color: var(--text); padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+.section-sep em {
+  background: linear-gradient(180deg, var(--gold-hi), var(--gold));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+
+/* Маленький круговой венок для номера в списке (CSS-only) */
+.tiny-wreath {
+  width: 32px; height: 32px;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  color: var(--gold);
+}
+</style>
+</head>
+<body>
+
+<!-- ───── SVG-симвлы переиспользуем ───── -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <!-- Большой лавровый венок (правая половина) -->
+  <symbol id="laurel-half" viewBox="0 0 80 110">
+    <g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+      <!-- центральный стебель — изогнут вверх и наружу -->
+      <path d="M 12,100 C 18,80 28,60 40,42 C 52,28 62,18 68,8" />
+      <!-- листья по стеблю (овалы) -->
+      <g fill="currentColor" stroke="none">
+        <ellipse cx="20" cy="92" rx="9" ry="3.5" transform="rotate(35 20 92)"/>
+        <ellipse cx="22" cy="80" rx="10" ry="3.5" transform="rotate(45 22 80)"/>
+        <ellipse cx="27" cy="68" rx="11" ry="3.8" transform="rotate(55 27 68)"/>
+        <ellipse cx="33" cy="55" rx="11" ry="3.8" transform="rotate(60 33 55)"/>
+        <ellipse cx="42" cy="42" rx="12" ry="4" transform="rotate(70 42 42)"/>
+        <ellipse cx="51" cy="30" rx="11" ry="3.8" transform="rotate(75 51 30)"/>
+        <ellipse cx="60" cy="20" rx="10" ry="3.5" transform="rotate(80 60 20)"/>
+        <ellipse cx="66" cy="11" rx="8" ry="3" transform="rotate(85 66 11)"/>
+      </g>
+      <!-- маленькие ягоды-золото между листьями -->
+      <g fill="currentColor" stroke="none" opacity="0.8">
+        <circle cx="25" cy="86" r="1.2"/>
+        <circle cx="32" cy="62" r="1.2"/>
+        <circle cx="48" cy="36" r="1.2"/>
+        <circle cx="58" cy="14" r="1.2"/>
+      </g>
+    </g>
+    <!-- бант -->
+    <g fill="none" stroke="currentColor" stroke-width="1" opacity="0.7">
+      <path d="M 12,100 C 9,103 6,108 4,110"/>
+      <path d="M 12,100 C 14,104 16,107 18,110"/>
+    </g>
+  </symbol>
+
+  <!-- Лавровая ветвь горизонтальная — для списка -->
+  <symbol id="laurel-h" viewBox="0 0 30 30">
+    <g fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round">
+      <!-- левая ветвь -->
+      <path d="M 4,15 C 8,12 12,11 14,11"/>
+      <ellipse fill="currentColor" stroke="none" cx="6" cy="13.5" rx="2.5" ry="1" transform="rotate(-30 6 13.5)"/>
+      <ellipse fill="currentColor" stroke="none" cx="9" cy="11.8" rx="2.5" ry="1" transform="rotate(-15 9 11.8)"/>
+      <!-- правая ветвь -->
+      <path d="M 26,15 C 22,12 18,11 16,11"/>
+      <ellipse fill="currentColor" stroke="none" cx="24" cy="13.5" rx="2.5" ry="1" transform="rotate(30 24 13.5)"/>
+      <ellipse fill="currentColor" stroke="none" cx="21" cy="11.8" rx="2.5" ry="1" transform="rotate(15 21 11.8)"/>
+    </g>
+  </symbol>
+
+  <!-- Иконка лавра для кнопки -->
+  <symbol id="crown-laurel" viewBox="0 0 50 50">
+    <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+      <!-- две ветви сходятся у звезды -->
+      <path d="M 8,40 C 12,30 16,22 22,15"/>
+      <path d="M 42,40 C 38,30 34,22 28,15"/>
+      <!-- листья слева -->
+      <g fill="currentColor" stroke="none">
+        <ellipse cx="11" cy="35" rx="3.5" ry="1.4" transform="rotate(45 11 35)"/>
+        <ellipse cx="14" cy="28" rx="4" ry="1.5" transform="rotate(55 14 28)"/>
+        <ellipse cx="18" cy="21" rx="4" ry="1.5" transform="rotate(65 18 21)"/>
+      </g>
+      <!-- листья справа -->
+      <g fill="currentColor" stroke="none">
+        <ellipse cx="39" cy="35" rx="3.5" ry="1.4" transform="rotate(-45 39 35)"/>
+        <ellipse cx="36" cy="28" rx="4" ry="1.5" transform="rotate(-55 36 28)"/>
+        <ellipse cx="32" cy="21" rx="4" ry="1.5" transform="rotate(-65 32 21)"/>
+      </g>
+      <!-- центральная звезда -->
+      <path fill="currentColor" stroke="none" d="M 25,8 L 26.5,12 L 30.5,12.4 L 27.5,15 L 28.5,19 L 25,16.7 L 21.5,19 L 22.5,15 L 19.5,12.4 L 23.5,12 Z"/>
+    </g>
+  </symbol>
+</svg>
+
+<div class="shell">
+
+  <header class="demo-head">
+    <div class="demo-head-title">
+      Вариант 03 · <em>Лавровый венок</em>
+    </div>
+    <div class="demo-head-meta">
+      аэстетика — <b>OLYMPUS · GOLD LEAF</b> · акцент — золото #d4a93a → #ffd980
+    </div>
+  </header>
+
+  <div class="grid">
+
+    <!-- ── ЛЕВО: ХАБ-СПИСОК ── -->
+    <aside class="list">
+      <div class="list-head">
+        <div class="list-head-title">Мифы</div>
+        <div class="list-head-count">14 / 14</div>
+      </div>
+      <div class="list-filter">
+        <button class="chip active">все</button>
+        <button class="chip">в работе</button>
+        <button class="chip">готовы</button>
+        <button class="chip">новые</button>
+        <button class="chip gold-chip">увенчаны</button>
+      </div>
+      <div class="list-items">
+
+        <div class="item crowned">
+          <div class="item-num-wrap">
+            <span class="item-num">01</span>
+            <svg class="tiny-wreath"><use href="#laurel-h"/></svg>
+          </div>
+          <div>
+            <div class="item-name">Пандора</div>
+            <div class="item-sub">25 сцен · в эфире 18 апр</div>
+          </div>
+          <div class="item-status crowned">увенчан</div>
+        </div>
+
+        <div class="item crowned">
+          <div class="item-num-wrap">
+            <span class="item-num">02</span>
+            <svg class="tiny-wreath"><use href="#laurel-h"/></svg>
+          </div>
+          <div>
+            <div class="item-name">Икар и Дедал</div>
+            <div class="item-sub">22 сцены · в эфире 21 апр</div>
+          </div>
+          <div class="item-status crowned">увенчан</div>
+        </div>
+
+        <div class="item crowned">
+          <div class="item-num-wrap">
+            <span class="item-num">03</span>
+            <svg class="tiny-wreath"><use href="#laurel-h"/></svg>
+          </div>
+          <div>
+            <div class="item-name">Тесей и Минотавр</div>
+            <div class="item-sub">23 сцены · в эфире 23 апр</div>
+          </div>
+          <div class="item-status crowned">увенчан</div>
+        </div>
+
+        <div class="item active">
+          <div class="item-num-wrap">
+            <span class="item-num">04</span>
+          </div>
+          <div>
+            <div class="item-name">Сизифов труд</div>
+            <div class="item-sub">21 сцена · 21 / 21 готово</div>
+          </div>
+          <div class="item-status ready">готов</div>
+        </div>
+
+        <div class="item">
+          <div class="item-num-wrap"><span class="item-num">05</span></div>
+          <div>
+            <div class="item-name">Мидас и золото</div>
+            <div class="item-sub">24 сцены · 18 / 24</div>
+          </div>
+          <div class="item-status in_progress">в работе</div>
+        </div>
+
+        <div class="item">
+          <div class="item-num-wrap"><span class="item-num">06</span></div>
+          <div>
+            <div class="item-name">Орфей и Эвридика</div>
+            <div class="item-sub">26 сцен · не начат</div>
+          </div>
+          <div class="item-status new">нов.</div>
+        </div>
+
+        <div class="item">
+          <div class="item-num-wrap"><span class="item-num">07</span></div>
+          <div>
+            <div class="item-name">Персефона и Аид</div>
+            <div class="item-sub">22 сцены · не начат</div>
+          </div>
+          <div class="item-status new">нов.</div>
+        </div>
+
+        <div class="item">
+          <div class="item-num-wrap"><span class="item-num">08</span></div>
+          <div>
+            <div class="item-name">Арахна</div>
+            <div class="item-sub">19 сцен · не начат</div>
+          </div>
+          <div class="item-status new">нов.</div>
+        </div>
+
+      </div>
+    </aside>
+
+    <!-- ── ЦЕНТР: ДЕТАЛКА — ещё НЕ увенчан, кнопка крупная ── -->
+    <main class="detail">
+      <div class="detail-eyebrow">— миф №04 · готов к венчанию</div>
+      <h1 class="detail-title">Сизифов <em>труд</em></h1>
+      <div class="detail-sub">21 сцена · отревьюено <b>полностью</b> · готов к финалу</div>
+
+      <div class="stages">
+        <div class="stage done">
+          <svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+          <div class="stage-name">озвучка</div>
+          <div class="stage-val">21<small>/ 21</small></div>
+        </div>
+        <div class="stage done">
+          <svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+          <div class="stage-name">картинки</div>
+          <div class="stage-val">21<small>/ 21</small></div>
+        </div>
+        <div class="stage done">
+          <svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="5" width="20" height="14" rx="2"/><polygon points="10,9 16,12 10,15" fill="currentColor"/></svg>
+          <div class="stage-name">видео</div>
+          <div class="stage-val">21<small>/ 21</small></div>
+        </div>
+      </div>
+
+      <div class="detail-scenes-title">
+        <span>Сцены</span><b style="color: var(--green);">21 / 21 готово</b>
+      </div>
+      <div class="scene-tiles">
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+        <div class="tile done"></div><div class="tile done"></div><div class="tile done"></div>
+      </div>
+
+      <!-- ─── КНОПКА «УВЕНЧАТЬ ЛАВРАМИ» ─── -->
+      <div class="crown-action">
+        <button class="btn-crown">
+          <svg class="btn-crown-laurel"><use href="#crown-laurel"/></svg>
+          <div class="btn-crown-text">
+            <div class="btn-crown-eyebrow">— ритуал · отметить опубликованным</div>
+            <div class="btn-crown-title">Увенчать лаврами</div>
+            <div class="btn-crown-desc">
+              Миф вышел в TikTok / YouTube. Поставит золотой венок
+              на номер мифа и в детальную карточку.
+            </div>
+          </div>
+          <div class="btn-crown-arrow">→</div>
+        </button>
+      </div>
+    </main>
+
+    <!-- ── ПРАВО: ФРАГМЕНТ РЕВЬЮ ── -->
+    <aside class="review-frag">
+      <div class="frag-head">
+        <div class="frag-head-eyebrow">внутри сценария</div>
+        <div class="frag-head-title">Икар и Дедал
+          <svg class="frag-head-laurel" viewBox="0 0 30 30"><use href="#laurel-h"/></svg>
+        </div>
+        <div class="frag-crumb">ревью озвучки · <b>в эфире</b></div>
+      </div>
+
+      <div class="frag-sb">
+        <div class="frag-rail">
+          <button class="rail-btn active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg></button>
+          <button class="rail-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></button>
+          <button class="rail-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><polygon points="10,9 16,12 10,15" fill="currentColor"/></svg></button>
+        </div>
+        <div class="frag-body">
+          <!-- Уже увенчан — кнопка показывает состояние -->
+          <div class="sb-crown crowned-state">
+            <svg class="sb-crown-laurel" viewBox="0 0 50 50"><use href="#crown-laurel"/></svg>
+            <div class="sb-crown-text">
+              увенчан
+              <small>в эфире · 21 апр</small>
+            </div>
+          </div>
+
+          <div class="frag-body-title">Сцены</div>
+          <div class="scene-row done dot">001 · готова</div>
+          <div class="scene-row done dot">002 · готова</div>
+          <div class="scene-row done dot">003 · готова</div>
+          <div class="scene-row done dot">004 · готова</div>
+          <div class="scene-row done dot">005 · готова</div>
+          <div class="scene-row done dot">006 · готова</div>
+          <div class="scene-row done dot">007 · готова</div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ─────── ВТОРОЙ РЯД: миф уже увенчан, лавры обхватывают заголовок ─────── -->
+  <h2 class="section-sep">
+    Состояние <em>после</em> венчания · крупный венок вокруг названия
+  </h2>
+
+  <div class="grid">
+
+    <aside class="list">
+      <div class="list-head">
+        <div class="list-head-title">Мифы</div>
+        <div class="list-head-count">14 / 14</div>
+      </div>
+      <div class="list-items" style="padding-top: 14px;">
+        <div class="item active crowned">
+          <div class="item-num-wrap">
+            <span class="item-num">02</span>
+            <svg class="tiny-wreath"><use href="#laurel-h"/></svg>
+          </div>
+          <div>
+            <div class="item-name">Икар и Дедал</div>
+            <div class="item-sub">22 сцены · в эфире 21 апр</div>
+          </div>
+          <div class="item-status crowned">увенчан</div>
+        </div>
+        <div class="item">
+          <div class="item-num-wrap"><span class="item-num">04</span></div>
+          <div>
+            <div class="item-name">Сизифов труд</div>
+            <div class="item-sub">готов к венчанию</div>
+          </div>
+          <div class="item-status ready">готов</div>
+        </div>
+        <div class="item">
+          <div class="item-num-wrap"><span class="item-num">05</span></div>
+          <div>
+            <div class="item-name">Мидас и золото</div>
+            <div class="item-sub">24 сцены · 18 / 24</div>
+          </div>
+          <div class="item-status in_progress">в работе</div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="detail is-crowned">
+
+      <div class="detail-eyebrow" style="color: var(--gold-hi);">— миф №02 · в эфире 21 апр</div>
+
+      <!-- Заголовок ОБХВАЧЕН лаврами -->
+      <div class="detail-title-wreath">
+        <svg class="left-laurel" style="color: var(--gold);"><use href="#laurel-half"/></svg>
+        <h1 class="detail-title">Икар и <em>Дедал</em></h1>
+        <svg class="right-laurel" style="color: var(--gold);"><use href="#laurel-half"/></svg>
+      </div>
+
+      <div class="detail-sub" style="color: var(--olive); margin-top: 6px;">
+        22 сцены · опубликован · <b style="color: var(--gold);">в эфире</b>
+      </div>
+
+      <div class="stages" style="margin-top: 22px;">
+        <div class="stage done"><svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg><div class="stage-name">озвучка</div><div class="stage-val">22<small>/ 22</small></div></div>
+        <div class="stage done"><svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg><div class="stage-name">картинки</div><div class="stage-val">22<small>/ 22</small></div></div>
+        <div class="stage done"><svg class="stage-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="5" width="20" height="14" rx="2"/><polygon points="10,9 16,12 10,15" fill="currentColor"/></svg><div class="stage-name">видео</div><div class="stage-val">22<small>/ 22</small></div></div>
+      </div>
+
+      <div class="detail-scenes-title">
+        <span>Сцены · в эфире</span><b>22 / 22</b>
+      </div>
+      <div class="scene-tiles">
+        <div class="tile crowned"></div><div class="tile crowned"></div><div class="tile crowned"></div>
+        <div class="tile crowned"></div><div class="tile crowned"></div><div class="tile crowned"></div>
+        <div class="tile crowned"></div><div class="tile crowned"></div><div class="tile crowned"></div>
+        <div class="tile crowned"></div><div class="tile crowned"></div><div class="tile crowned"></div>
+        <div class="tile crowned"></div><div class="tile crowned"></div><div class="tile crowned"></div>
+        <div class="tile crowned"></div><div class="tile crowned"></div><div class="tile crowned"></div>
+        <div class="tile crowned"></div><div class="tile crowned"></div><div class="tile crowned"></div>
+        <div class="tile crowned"></div>
+      </div>
+
+      <div class="crown-action">
+        <button class="btn-decrown">↺ снять венок</button>
+      </div>
+
+    </main>
+
+    <aside class="review-frag" style="background:transparent; border:1px dashed var(--border);">
+      <div class="frag-head" style="border:none;">
+        <div class="frag-head-eyebrow">после венчания</div>
+        <div class="frag-head-title" style="font-size:.9rem; color:var(--text-dim); font-style:normal;">
+          • венок обхватывает заголовок мифа<br>
+          • в списке — мини-лавр на номере + чип «увенчан»<br>
+          • плитки сцен меняют цвет с зелёного на золотой<br>
+          • никаких функциональных ограничений<br>
+          • кнопка «↺ снять венок» возвращает в обычное состояние
+        </div>
+      </div>
+    </aside>
+
+  </div>
+
+  <div class="demo-foot">
+    <b>УВЕНЧАН</b> = миф в эфире · золотой ритуал в духе бренда «Кисы Олимпа»
+  </div>
+
+</div>
+
+</body>
+</html>

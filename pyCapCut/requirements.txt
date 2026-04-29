@@ -1,0 +1,3 @@
+pycapcut>=0.0.3
+# pymediainfo ставится автоматически вместе с pycapcut, но фиксируем явно.
+pymediainfo>=7.0.0
