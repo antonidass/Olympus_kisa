@@ -45,6 +45,11 @@ h1 {
   color: #888;
 }
 
+.row.toggles {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
 select,
 button {
   background: #1a1d24;
@@ -68,6 +73,11 @@ button:hover { background: #232831; }
   gap: 4px;
   cursor: pointer;
   user-select: none;
+}
+
+.row.toggles .autocopy {
+  color: #b6bcc7;
+  font-size: 11px;
 }
 
 main.prompts {

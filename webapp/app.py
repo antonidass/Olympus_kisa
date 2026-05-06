@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote
@@ -36,6 +37,14 @@ ROOT = Path(__file__).resolve().parent.parent
 CONTENT_DIR = ROOT / "content"
 SELECTIONS_DIR = Path(__file__).resolve().parent / "selections"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+# Раскатка нового сценария — общий модуль с CLI (`automation/create_scenario.py`).
+sys.path.insert(0, str(ROOT))
+from automation.scenario_scaffold import (  # noqa: E402
+    ScenarioExistsError,
+    create_scenario as scaffold_create_scenario,
+    validate_scenario_name,
+)
 
 SELECTIONS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -810,10 +819,11 @@ def api_select(scenario: str):
 # ── CosyVoice3 regeneration ────────────────────────────────────────────────
 #
 # Параметры по умолчанию, которые UI показывает пользователю в toast.
-# Пользователь задал их явно: речь синтезируем с клонированием голоса из
-# content/Ящик Пандоры/TTS.mp3, скорость 1.0, 10 вариантов.
+# Речь синтезируем с клонированием голоса из content/Ящик Пандоры/TTS.mp3,
+# 10 вариантов. Скорость задаётся пользователем в UI (input в модалке
+# регенерации); 1.1 — fallback, если фронт не прислал значение.
 COSYVOICE_MODEL_NAME = "Fun-CosyVoice3-0.5B"
-COSYVOICE_DEFAULT_SPEED = 1.0
+COSYVOICE_DEFAULT_SPEED = 1.1
 COSYVOICE_DEFAULT_VARIANTS = 10
 COSYVOICE_PROMPT_WAV = CONTENT_DIR / "Ящик Пандоры" / "TTS.mp3"
 COSYVOICE_PROMPT_TXT = CONTENT_DIR / "Ящик Пандоры" / "TTS.txt"
@@ -1167,6 +1177,228 @@ def api_cosyvoice_status(scenario: str, base: str):
         "log_tail": log_tail,
         "log_mtime": log_mtime,
         "report": report,
+        "error_hint": error_hint,
+    })
+
+
+# ── Batch CosyVoice (option A: одна загрузка модели на весь миф) ──────────
+#
+# Один subprocess cosyvoice_runner.py --auto, который ВНУТРИ обходит все
+# сцены из --bases и грузит модель ровно один раз. Экономит ~30% времени
+# на массовой генерации (один прогрев на 24 сцены вместо 24).
+
+def cosyvoice_batch_status_path(scenario: str) -> Path:
+    return CONTENT_DIR / scenario / "voiceover" / "audio" / "_cosyvoice_batch.json"
+
+
+def cosyvoice_batch_log_path(scenario: str) -> Path:
+    return CONTENT_DIR / scenario / "voiceover" / "audio" / "_cosyvoice_batch.log"
+
+
+@app.route("/api/cosyvoice-batch-start/<path:scenario>", methods=["POST"])
+def api_cosyvoice_batch_start(scenario: str):
+    """Стартует один subprocess CosyVoice runner в auto-режиме на список сцен.
+
+    Тело запроса: { "bases": ["sentence_001", ...], "speed": 1.1, "variants": 10 }
+
+    bases должны существовать как файлы content/<scenario>/voiceover/texts/<base>.txt —
+    runner читает текст оттуда (а не передаёт через CLI, чтобы не упереться в
+    лимиты Windows command line на длинных мифах).
+
+    Возвращает PID и пути к статус/лог файлам.
+    """
+    scenario = unquote(scenario)
+    data = request.get_json(force=True)
+    bases = data.get("bases") or []
+    if not isinstance(bases, list) or not bases:
+        abort(400, "bases must be a non-empty list")
+    bases = [str(b).strip() for b in bases if str(b).strip()]
+    if not bases:
+        abort(400, "bases is empty after sanitization")
+
+    scenario_dir = CONTENT_DIR / scenario
+    if not scenario_dir.exists():
+        abort(404, f"Сценарий {scenario!r} не найден")
+
+    # Проверяем, что для всех баз есть файл с текстом — иначе runner упадёт
+    # уже на одной из сцен. Лучше отказать сразу с понятным сообщением.
+    texts_dir = scenario_dir / "voiceover" / "texts"
+    missing = [b for b in bases if not (texts_dir / f"{b}.txt").exists()]
+    if missing:
+        abort(400, f"Нет файлов текста для: {', '.join(missing[:5])}"
+                   + (f" (и ещё {len(missing) - 5})" if len(missing) > 5 else ""))
+
+    if not COSYVOICE_PROMPT_WAV.exists():
+        abort(500, f"Нет prompt-wav: {COSYVOICE_PROMPT_WAV}")
+    if not COSYVOICE_PROMPT_TXT.exists():
+        abort(500, f"Нет prompt-txt: {COSYVOICE_PROMPT_TXT}")
+
+    variants = int(data.get("variants") or COSYVOICE_DEFAULT_VARIANTS)
+    speed = float(data.get("speed") or COSYVOICE_DEFAULT_SPEED)
+
+    # Тот же поиск интерпретатора, что и в одиночном эндпоинте.
+    default_venv = Path.home() / "cosyvoice-venv" / "Scripts" / "python.exe"
+    env_val = os.environ.get("COSYVOICE_PYTHON")
+    if env_val and Path(env_val).exists():
+        python_exe = env_val
+    elif default_venv.exists():
+        python_exe = str(default_venv)
+    else:
+        python_exe = sys.executable
+
+    cmd = [
+        python_exe,
+        str(COSYVOICE_RUNNER),
+        "--auto",
+        "--scenario", scenario,
+        "--bases", ",".join(bases),
+        "--variants", str(variants),
+        "--speed", str(speed),
+        "--prompt-wav", str(COSYVOICE_PROMPT_WAV),
+        "--prompt-text", str(COSYVOICE_PROMPT_TXT),
+    ]
+
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+
+    # Чистим старый batch-лог и статус, чтобы фронт не путался с прошлым прогоном.
+    log_path = cosyvoice_batch_log_path(scenario)
+    status_path = cosyvoice_batch_status_path(scenario)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.unlink(missing_ok=True)
+    status_path.unlink(missing_ok=True)
+
+    # Помечаем все сцены батча как regen — UI сразу нарисует оранжевый статус.
+    selections = load_selections(scenario)
+    for b in bases:
+        selections.pop(b, None)
+        selections[f"{b}::status"] = "regen"
+    save_selections(scenario, selections)
+
+    log_file = open(log_path, "ab")  # noqa: SIM115 — держим для subprocess
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            cwd=str(ROOT),
+            env=env,
+            creationflags=(
+                subprocess.CREATE_NEW_PROCESS_GROUP
+                if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP") else 0
+            ),
+        )
+        pid = proc.pid
+    except Exception as e:
+        log_file.close()
+        abort(500, f"Не удалось запустить cosyvoice_runner --auto: {e}")
+
+    print(
+        f"[cosyvoice-batch] PID={pid} scenario={scenario!r} bases={len(bases)} "
+        f"variants={variants} speed={speed} log={log_path.name}"
+    )
+
+    return jsonify({
+        "ok": True,
+        "pid": pid,
+        "python_exe": python_exe,
+        "model": COSYVOICE_MODEL_NAME,
+        "total": len(bases),
+        "bases": bases,
+        "variants": variants,
+        "speed": speed,
+        "prompt_wav": str(COSYVOICE_PROMPT_WAV.relative_to(ROOT)),
+        "log_file": str(log_path.relative_to(ROOT)),
+        "status_file": str(status_path.relative_to(ROOT)),
+        "message": (
+            f"CosyVoice3 batch: {len(bases)} сцен, скорость {speed}, "
+            f"одна загрузка модели"
+        ),
+    })
+
+
+@app.route("/api/cosyvoice-batch-status/<path:scenario>")
+def api_cosyvoice_batch_status(scenario: str):
+    """Прогресс batch-генерации. Фронт поллит каждые 1.5 сек.
+
+    Источник правды — _cosyvoice_batch.json, который runner пишет сам.
+    Лог тейлим из _cosyvoice_batch.log, чтобы UI мог показать tail при ошибке.
+
+    Возвращаем:
+      { exists, active, done, total, completed_count, current_base, current_index,
+        current_produced, completed_bases, failed, log_tail, error_hint, ... }
+    """
+    scenario = unquote(scenario)
+    status_path = cosyvoice_batch_status_path(scenario)
+    log_path = cosyvoice_batch_log_path(scenario)
+
+    if not status_path.exists():
+        return jsonify({
+            "exists": False, "active": False, "done": False,
+            "total": 0, "completed_count": 0,
+            "current_base": None, "current_index": 0, "current_produced": 0,
+            "completed_bases": [], "failed": [],
+            "log_tail": "", "error_hint": None,
+        })
+
+    try:
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return jsonify({
+            "exists": True, "active": False, "done": False,
+            "error_hint": f"не смог прочитать статус: {e}",
+            "log_tail": "",
+        })
+
+    log_tail = ""
+    log_mtime = 0.0
+    if log_path.exists():
+        try:
+            raw = log_path.read_bytes()
+            log_tail = raw[-8000:].decode("utf-8", errors="replace")
+            log_mtime = log_path.stat().st_mtime
+        except Exception:
+            pass
+
+    # Эвристика ошибки — те же маркеры, что и в одиночном статусе.
+    error_hint = status.get("error")
+    if not error_hint and not status.get("done") and log_tail:
+        for marker in (
+            "Traceback (most recent call last)", "ModuleNotFoundError",
+            "ImportError", "FileNotFoundError",
+            "ОТСУТСТВУЮТ ЗАВИСИМОСТИ",
+        ):
+            if marker in log_tail:
+                error_hint = marker
+                break
+        if error_hint is None and log_mtime:
+            silence_sec = datetime.now().timestamp() - log_mtime
+            # Загрузка модели может занимать до 30 сек на холодном старте,
+            # поэтому считаем «зависанием» только тишину >60 сек.
+            if silence_sec > 60:
+                error_hint = f"no log activity ({int(silence_sec)}s)"
+
+    completed_bases = status.get("completed_bases", []) or []
+    return jsonify({
+        "exists": True,
+        "active": bool(status.get("active")),
+        "done": bool(status.get("done")),
+        "scenario": status.get("scenario", scenario),
+        "model": status.get("model", COSYVOICE_MODEL_NAME),
+        "speed": status.get("speed", COSYVOICE_DEFAULT_SPEED),
+        "variants": status.get("variants", COSYVOICE_DEFAULT_VARIANTS),
+        "total": int(status.get("total", 0)),
+        "completed_count": len(completed_bases),
+        "completed_bases": completed_bases,
+        "failed": status.get("failed", []) or [],
+        "queue": status.get("queue", []) or [],
+        "current_base": status.get("current_base"),
+        "current_index": int(status.get("current_index", 0)),
+        "current_produced": int(status.get("current_produced", 0)),
+        "started_at": status.get("started_at"),
+        "updated_at": status.get("updated_at"),
+        "elapsed_sec": status.get("elapsed_sec"),
+        "log_tail": log_tail,
+        "log_mtime": log_mtime,
         "error_hint": error_hint,
     })
 
@@ -2480,128 +2712,11 @@ def api_scenario_publish(scenario: str):
 # ─── Создание нового сценария ──────────────────────────────────────────────
 # Один клик в UI «+ Новый миф» → создаётся вся папочная структура мифа
 # (prompts/, voiceover/audio, voiceover/texts, images/, video/, music/,
-# final/) и три заготовки промптов (voiceover.md / images.md / video.md)
-# с шаблоном по правилам канала, чтобы дальше шаги пайплайна шли по
-# готовой структуре без ручного «mkdir».
-
-
-SCENARIO_SUBDIRS = (
-    "prompts",
-    "voiceover/audio",
-    "voiceover/texts",
-    "images",
-    "video",
-    "music",
-    "final",
-)
-
-
-def _validate_scenario_name(name: str) -> tuple[bool, str]:
-    """Имя папки нового сценария: непустое, без слешей, без `..`."""
-    if not name or not name.strip():
-        return False, "Имя не может быть пустым"
-    name = name.strip()
-    if any(ch in name for ch in ("/", "\\", "\0")):
-        return False, "Имя не может содержать слеш"
-    if name in (".", ".."):
-        return False, "Недопустимое имя"
-    if len(name) > 100:
-        return False, "Имя слишком длинное (максимум 100 символов)"
-    return True, ""
-
-
-def _scenario_voiceover_template(name: str) -> str:
-    """Шаблон prompts/voiceover.md для нового сценария.
-
-    Структура соответствует правилу канала:
-      - заголовок мифа
-      - интро «<Имя/Название>. Миф за минуту.»
-      - кликбейтный хук в 1–2 предложения (обязателен — удерживает зрителя
-        в первые 3 секунды; см. Мидаса как эталон)
-      - основной текст истории
-    """
-    return (
-        f"# {name}\n"
-        f"\n"
-        f"{name}. Миф за минуту.\n"
-        f"\n"
-        f"<!-- ШАГ 1 — КЛИКБЕЙТНЫЙ ХУК (ОБЯЗАТЕЛЕН).\n"
-        f"     Сразу после «Миф за минуту» идёт 1–2 предложения, которые\n"
-        f"     удерживают зрителя в первые 3 секунды: интрига, вопрос или\n"
-        f"     ошарашивающая ставка. Без хука ретеншн рассыпается на 2-й\n"
-        f"     секунде. Эталон — Мидас:\n"
-        f"\n"
-        f"       «Представьте: всё, чего касаетесь, становится золотом.\n"
-        f"        Царь Мида́с думал — это мечта. Оказалось — ловушка.»\n"
-        f"\n"
-        f"     Удалить эту инструкцию и заменить строку ниже на свой хук. -->\n"
-        f"<КЛИКБЕЙТНЫЙ ХУК — заменить, 1–2 предложения, см. инструкцию выше>\n"
-        f"\n"
-        f"<!-- ШАГ 2 — ОСНОВНОЙ ТЕКСТ (~150–200 слов, 7–10 предложений).\n"
-        f"     Правила: ударения только на именах собственных, без триггерных\n"
-        f"     слов (убил→сразил, смерть→гибель), живой ритм без канцелярита.\n"
-        f"     После готового текста разбить на предложения и положить\n"
-        f"     каждое в voiceover/texts/sentence_NNN.txt. -->\n"
-        f"<ОСНОВНОЙ ТЕКСТ — заменить>\n"
-    )
-
-
-def _scenario_images_template(name: str) -> str:
-    """Заготовка prompts/images.md с напоминанием про правила канала."""
-    return (
-        f"<!-- {name} — промпты для генерации картинок (Google Flow / ImageFX).\n"
-        f"\n"
-        f"     Маппинг sentence ↔ scene_NN заполнить здесь после написания\n"
-        f"     основного текста и разбиения на предложения. Пример:\n"
-        f"       sentence_001 → scene_01 (1 шот)\n"
-        f"       sentence_002 → scene_02 + scene_03 (2 шота, длинная фраза)\n"
-        f"\n"
-        f"     Правила канала, обязательны в каждом промпте:\n"
-        f"       - Уникальный subject-маркер 3–4 английских слова в начале\n"
-        f"         (например: persephone gathering spring flowers)\n"
-        f"       - anthropomorphic bipedal cat character, standing upright\n"
-        f"         on two legs like a human, humanoid body proportions\n"
-        f"       - NO humans, NO people, NO real four-legged cats\n"
-        f"       - Стилевой каркас: highly detailed pixel art, 9:16 vertical,\n"
-        f"         ancient Greek setting, warm cinematic lighting,\n"
-        f"         no text, no letters, no camera movement -->\n"
-        f"\n"
-        f"<!-- Карточка персонажей (для консистентности между сценами):\n"
-        f"     <ОПИСАНИЕ ГЕРОЕВ — окрас, возраст, одежда, цвет глаз — заменить> -->\n"
-        f"\n"
-        f"## Сцена 1\n"
-        f"\n"
-        f"**Промпт:** <уникальный маркер 3-4 слова>, highly detailed pixel art, "
-        f"9:16 vertical composition, ancient Greek setting, anthropomorphic "
-        f"bipedal cat character, standing upright on two legs like a human, "
-        f"humanoid body proportions, modern detailed pixel art style, warm "
-        f"cinematic lighting, no text, no letters, no camera movement, "
-        f"NO humans, NO people, NO real four-legged cats, "
-        f"only anthropomorphic bipedal cat characters\n"
-    )
-
-
-def _scenario_video_template(name: str) -> str:
-    """Заготовка prompts/video.md для image-to-video (Veo / LTX)."""
-    return (
-        f"<!-- {name} — промпты image-to-video (Veo / LTX) по картинкам,\n"
-        f"     прошедшим ревью.\n"
-        f"\n"
-        f"     Правила канала:\n"
-        f"       - Уникальный subject-маркер 3–4 английских слова в начале\n"
-        f"       - Обязательный негатив в каждом промпте:\n"
-        f"         No speech, no dialogue, no talking, no voices,\n"
-        f"         no mouth movement, no music\n"
-        f"       - Без зумов и панорамирования камеры (если не попросили)\n"
-        f"       - no blood, no gore, no wounds (модерация TikTok/Shorts) -->\n"
-        f"\n"
-        f"## Сцена 1\n"
-        f"\n"
-        f"**Промпт:** <уникальный маркер 3-4 слова>, slight motion, "
-        f"ancient Greek setting, anthropomorphic bipedal cat character, "
-        f"No speech, no dialogue, no talking, no voices, no mouth movement, no music, "
-        f"no blood, no gore\n"
-    )
+# final/) и три заготовки промптов (voiceover.md / images.md / video.md).
+#
+# Логика scaffolding вынесена в `automation/scenario_scaffold.py` —
+# тот же модуль использует CLI `automation/create_scenario.py` (шаг 2
+# пайплайна), чтобы UI и CLI не разъезжались.
 
 
 @app.route("/api/scenarios/create", methods=["POST"])
@@ -2616,36 +2731,20 @@ def api_scenarios_create():
     payload = request.get_json(silent=True) or {}
     raw_name = (payload.get("name") or "").strip()
 
-    ok, err = _validate_scenario_name(raw_name)
+    ok, err = validate_scenario_name(raw_name)
     if not ok:
         return jsonify({"ok": False, "error": err}), 400
 
-    target = CONTENT_DIR / raw_name
-    if target.exists():
+    raw_name = raw_name.strip()
+
+    try:
+        created = scaffold_create_scenario(raw_name, CONTENT_DIR, root=ROOT)
+    except ScenarioExistsError:
         return jsonify({
             "ok": False,
             "error": f"Сценарий «{raw_name}» уже существует",
             "exists": True,
         }), 409
-
-    created: list[str] = []
-    target.mkdir(parents=True, exist_ok=False)
-    created.append(str(target.relative_to(ROOT)).replace("\\", "/"))
-
-    for sub in SCENARIO_SUBDIRS:
-        p = target / sub
-        p.mkdir(parents=True, exist_ok=True)
-        created.append(str(p.relative_to(ROOT)).replace("\\", "/"))
-
-    files = (
-        ("prompts/voiceover.md", _scenario_voiceover_template(raw_name)),
-        ("prompts/images.md", _scenario_images_template(raw_name)),
-        ("prompts/video.md", _scenario_video_template(raw_name)),
-    )
-    for rel, content in files:
-        fp = target / rel
-        fp.write_text(content, encoding="utf-8")
-        created.append(str(fp.relative_to(ROOT)).replace("\\", "/"))
 
     print(f"[create] Сценарий {raw_name!r} создан: {len(created)} путей")
     return jsonify({
@@ -2673,23 +2772,135 @@ def _extension_marker(prompt: str) -> str:
     return " ".join(head.split()[:4])
 
 
+EXTENSION_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+EXTENSION_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".m4v"}
+
+
+def _extension_target_dir(scenario_dir: Path, target: str) -> Path:
+    if target == "images":
+        return scenario_dir / "images"
+    if target == "video":
+        return scenario_dir / "video"
+    if target == "stickers":
+        return scenario_dir / "images" / "stickers"
+    raise ValueError(f"unsupported target: {target}")
+
+
+def _extension_safe_name(name: str) -> str:
+    """Санитизирует имя файла из Flow для Windows/репозитория."""
+    clean = Path(name).name.strip()
+    clean = re.sub(r'[<>:"/\\|?*]+', "_", clean)
+    return clean or "flow_download.bin"
+
+
+def _extension_unique_path(dest_dir: Path, filename: str) -> Path:
+    """Подбирает незанятое имя в target-директории: file.ext, file_2.ext, ..."""
+    candidate = dest_dir / filename
+    if not candidate.exists():
+        return candidate
+    stem = candidate.stem
+    suffix = candidate.suffix
+    idx = 2
+    while True:
+        probe = dest_dir / f"{stem}_{idx}{suffix}"
+        if not probe.exists():
+            return probe
+        idx += 1
+
+
+def _extension_import_single_file(src: Path, dest_dir: Path, allowed_exts: set[str]) -> dict:
+    ext = src.suffix.lower()
+    if ext not in allowed_exts:
+        raise ValueError(
+            f"Неподдерживаемый тип файла {src.name!r}. Ожидался один из: {sorted(allowed_exts)}"
+        )
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dst = _extension_unique_path(dest_dir, _extension_safe_name(src.name))
+    shutil.copy2(src, dst)
+    return {
+        "imported_count": 1,
+        "skipped_count": 0,
+        "files": [dst.name],
+        "skipped": [],
+    }
+
+
+def _extension_import_zip(src_zip: Path, dest_dir: Path, allowed_exts: set[str]) -> dict:
+    """Достаёт из zip только нужные media-файлы и складывает в target-папку."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    imported: list[str] = []
+    skipped: list[str] = []
+
+    with zipfile.ZipFile(src_zip) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            inner_name = Path(info.filename).name
+            if not inner_name:
+                continue
+            safe_name = _extension_safe_name(inner_name)
+            ext = Path(safe_name).suffix.lower()
+            if ext not in allowed_exts:
+                skipped.append(inner_name)
+                continue
+            dst = _extension_unique_path(dest_dir, safe_name)
+            with zf.open(info) as src_fh, dst.open("wb") as dst_fh:
+                shutil.copyfileobj(src_fh, dst_fh)
+            imported.append(dst.name)
+
+    if not imported:
+        raise ValueError(
+            f"В архиве {src_zip.name!r} не нашлось файлов подходящего типа: {sorted(allowed_exts)}"
+        )
+
+    return {
+        "imported_count": len(imported),
+        "skipped_count": len(skipped),
+        "files": imported,
+        "skipped": skipped,
+    }
+
+
+def _extension_import_download(source_path: Path, scenario_dir: Path, target: str) -> dict:
+    """Импортирует скачанный Flow-файл в content/<scenario>/{images,video,images/stickers}/."""
+    # video → видео-расширения; images и stickers — оба картиночные.
+    allowed_exts = EXTENSION_VIDEO_EXTS if target == "video" else EXTENSION_IMAGE_EXTS
+    dest_dir = _extension_target_dir(scenario_dir, target)
+
+    if source_path.suffix.lower() == ".zip":
+        result = _extension_import_zip(source_path, dest_dir, allowed_exts)
+    else:
+        result = _extension_import_single_file(source_path, dest_dir, allowed_exts)
+
+    result.update({
+        "target": target,
+        "destination_dir": str(dest_dir),
+        "source": str(source_path),
+    })
+    return result
+
+
 @app.route("/api/extension/scenarios")
 def api_extension_scenarios():
-    """Сценарии у которых есть prompts/images.md или prompts/video.md."""
+    """Сценарии у которых есть prompts/{images,video,stickers}.md."""
     items = []
     for d in iter_scenarios_by_creation(CONTENT_DIR):
         images_md = d / "prompts" / "images.md"
         video_md = d / "prompts" / "video.md"
+        stickers_md = d / "prompts" / "stickers.md"
         has_images = images_md.exists()
         has_video = video_md.exists()
-        if not (has_images or has_video):
+        has_stickers = stickers_md.exists()
+        if not (has_images or has_video or has_stickers):
             continue
         item = {
             "name": d.name,
             "has_images": has_images,
             "has_video": has_video,
+            "has_stickers": has_stickers,
             "image_count": len(parse_images_md(images_md)) if has_images else 0,
             "video_count": len(parse_video_md(video_md)) if has_video else 0,
+            "sticker_count": len(parse_images_md(stickers_md)) if has_stickers else 0,
         }
         items.append(item)
     return jsonify({"scenarios": items})
@@ -2697,14 +2908,18 @@ def api_extension_scenarios():
 
 @app.route("/api/extension/prompts/<path:scenario>/<kind>")
 def api_extension_prompts(scenario: str, kind: str):
-    """Список промптов сценария: kind = images|video. С subject-маркерами."""
-    if kind not in ("images", "video"):
-        abort(400, description="kind должен быть images|video")
+    """Список промптов сценария: kind = images|video|stickers. С subject-маркерами.
+
+    Стикеры используют тот же формат что и images.md (## Сцена N + **Промпт:**),
+    поэтому парсим тем же `parse_images_md`.
+    """
+    if kind not in ("images", "video", "stickers"):
+        abort(400, description="kind должен быть images|video|stickers")
     scenario = unquote(scenario)
     md_path = CONTENT_DIR / scenario / "prompts" / f"{kind}.md"
     if not md_path.exists():
         abort(404, description=f"Нет {kind}.md для {scenario!r}")
-    parsed = parse_images_md(md_path) if kind == "images" else parse_video_md(md_path)
+    parsed = parse_video_md(md_path) if kind == "video" else parse_images_md(md_path)
     out = []
     for scene_id in sorted(parsed.keys()):
         try:
@@ -2771,6 +2986,67 @@ def api_extension_distribute():
         "stderr": result.stderr,
         "scenario": scenario,
         "archive": str(archive),
+    })
+
+
+@app.route("/api/extension/import-download", methods=["POST"])
+def api_extension_import_download():
+    """Импортирует вручную скачанный из Flow файл/zip в images/ или video/ сценария.
+
+    Body:
+      {
+        "scenario": "<имя мифа>",
+        "source_path": "<полный путь к скачанному файлу>",
+        "target": "images" | "video"
+      }
+    """
+    data = request.get_json(silent=True) or {}
+    scenario = (data.get("scenario") or "").strip()
+    source_path = (data.get("source_path") or "").strip()
+    target = (data.get("target") or "").strip().lower()
+
+    if not scenario or not source_path or target not in {"images", "video", "stickers"}:
+        abort(400, description="Нужны scenario, source_path и target=images|video|stickers")
+
+    scenario_dir = CONTENT_DIR / scenario
+    if not scenario_dir.exists():
+        abort(404, description=f"Сценарий {scenario!r} не найден")
+
+    source = Path(source_path)
+    if not source.exists():
+        abort(404, description=f"Файл не найден: {source_path}")
+
+    try:
+        result = _extension_import_download(source, scenario_dir, target)
+    except zipfile.BadZipFile:
+        return jsonify({
+            "ok": False,
+            "error": f"Файл {source.name!r} не удалось открыть как zip-архив",
+            "scenario": scenario,
+            "target": target,
+            "source": str(source),
+        }), 400
+    except ValueError as e:
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+            "scenario": scenario,
+            "target": target,
+            "source": str(source),
+        }), 400
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+            "scenario": scenario,
+            "target": target,
+            "source": str(source),
+        }), 500
+
+    return jsonify({
+        "ok": True,
+        "scenario": scenario,
+        **result,
     })
 
 

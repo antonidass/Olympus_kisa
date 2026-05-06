@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "BOGI Flow Promptr",
-  "version": "0.1.0",
-  "description": "Помощник для копирования промптов в Google Flow и автораскладки скачанных zip-архивов по сценам.",
+  "version": "0.3.0",
+  "description": "Помощник для копирования промптов в Google Flow (картинки/стикеры/видео) и импорта вручную скачанных файлов в сценарий.",
   "permissions": ["sidePanel", "downloads", "storage", "clipboardWrite"],
   "host_permissions": [
     "http://127.0.0.1:5000/*",

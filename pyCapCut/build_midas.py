@@ -37,7 +37,7 @@ from transitions import resolve as resolve_transition_name, is_long as is_long_t
 
 WIDTH = 1080
 HEIGHT = 1920
-FPS = 30
+FPS = 60
 
 US = 1_000_000
 GAP_US = int(2 / FPS * US)

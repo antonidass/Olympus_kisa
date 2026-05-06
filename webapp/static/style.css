@@ -722,6 +722,32 @@ body[data-view="hub"] .crumb-link {
   font-style: italic;
 }
 
+.modal-body .mb-speed-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 4px 8px;
+  width: 72px;
+  text-align: center;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.modal-body .mb-speed-input::-webkit-outer-spin-button,
+.modal-body .mb-speed-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.modal-body .mb-speed-input:focus {
+  outline: none;
+  border-color: var(--text-dim);
+}
+
 .modal-footer {
   display: flex;
   gap: 10px;

@@ -37,12 +37,12 @@ from transitions import resolve as resolve_transition_name, is_long as is_long_t
 
 WIDTH = 1080
 HEIGHT = 1920       # вертикаль под Shorts / Reels / TikTok
-FPS = 30
+FPS = 60
 
 # Всё считаем в микросекундах, чтобы избежать overlap-а из-за float rounding.
 US = 1_000_000
 
-# Короткая «склейка» между аудиосегментами внутри сцены (≈ 2 кадра при 30 fps).
+# Короткая «склейка» между аудиосегментами внутри сцены (≈ 2 кадра при 60 fps).
 GAP_US = int(2 / FPS * US)
 
 # Длительность перехода между сценами (в микросекундах).

@@ -2,29 +2,42 @@
 CosyVoice3 Runner — генерация 10 вариантов озвучки через локальную модель
 Fun-CosyVoice3-0.5B с клонированием голоса (zero_shot режим).
 
-Вызывается из webapp (`/api/regenerate-cosyvoice/<scenario>`) как subprocess,
-чтобы UI не блокировался пока модель прогревается и генерирует варианты.
+Вызывается из webapp как subprocess, чтобы UI не блокировался пока модель
+прогревается и генерирует варианты.
 
-Использование (CLI):
-    python automation/cosyvoice_runner.py \
-        --scenario "Ящик Пандоры" \
-        --base sentence_003 \
-        --text "Он передал его людям и всё изменилось." \
-        --variants 10 \
-        --speed 1.0 \
-        --prompt-wav "content/Ящик Пандоры/TTS.mp3" \
-        --prompt-text "content/Ящик Пандоры/TTS.txt"
+Два режима:
 
-Выход:
-    content/<scenario>/voiceover/audio/<base>/<base>_v1.mp3
-    content/<scenario>/voiceover/audio/<base>/<base>_v2.mp3
-    ...
-    content/<scenario>/voiceover/audio/<base>/<base>_v10.mp3
+1) Одиночный (`/api/regenerate-cosyvoice/<scenario>`):
+       python automation/cosyvoice_runner.py \
+           --scenario "Ящик Пандоры" \
+           --base sentence_003 \
+           --text "Он передал его людям и всё изменилось." \
+           --variants 10 --speed 1.1 \
+           --prompt-wav "content/Ящик Пандоры/TTS.mp3" \
+           --prompt-text "content/Ящик Пандоры/TTS.txt"
+
+2) Batch / `--auto` (`/api/cosyvoice-batch-start/<scenario>`):
+       python automation/cosyvoice_runner.py --auto \
+           --scenario "Персефона и Аид" \
+           --bases sentence_001,sentence_002,sentence_003 \
+           --variants 10 --speed 1.1 \
+           --prompt-wav "content/Ящик Пандоры/TTS.mp3" \
+           --prompt-text "content/Ящик Пандоры/TTS.txt"
+   В этом режиме модель грузится ОДИН РАЗ и обходит все сцены по очереди.
+   Текст каждой сцены читается из content/<scenario>/voiceover/texts/<base>.txt.
+   Прогресс пишется в content/<scenario>/voiceover/audio/_cosyvoice_batch.json,
+   общий лог — _cosyvoice_batch.log рядом.
+
+Выход (одинаковый для обоих режимов):
+    content/<scenario>/voiceover/audio/review_sentences/<base>/<base>_v{1..10}.mp3
+    content/<scenario>/voiceover/audio/review_sentences/<base>/_cosyvoice_report.json
+    content/<scenario>/voiceover/audio/review_sentences/<base>/_cosyvoice_runner.log
 
 Параллелизация:
-    Модель загружается один раз, варианты генерируются последовательно
-    (с разными seed). Конвертация WAV→MP3 идёт в ThreadPoolExecutor,
-    чтобы не блокировать следующую инференс-итерацию.
+    Модель загружается один раз (в auto-режиме — на весь батч),
+    варианты внутри сцены генерируются последовательно с разными seed.
+    Конвертация WAV→MP3 идёт в ThreadPoolExecutor, чтобы не блокировать
+    следующую инференс-итерацию.
 """
 
 from __future__ import annotations
@@ -50,7 +63,7 @@ DEFAULT_PROMPT_WAV = CONTENT_DIR / "Ящик Пандоры" / "TTS.mp3"
 DEFAULT_PROMPT_TXT = CONTENT_DIR / "Ящик Пандоры" / "TTS.txt"
 
 DEFAULT_VARIANTS = 10
-DEFAULT_SPEED = 1.0
+DEFAULT_SPEED = 1.1
 
 # ffmpeg — берётся из системного PATH (на рабочей машине лежит в
 # external/ffmpeg/ffmpeg-8.1-full_build-shared/bin/ и добавлен в PATH).
@@ -76,9 +89,70 @@ def load_cosyvoice_model():
     from cosyvoice.utils.common import set_all_random_seed  # type: ignore
 
     print(f"[cosyvoice] загружаю модель из {COSYVOICE_MODEL_DIR}", flush=True)
+    t0 = time.time()
     model = AutoModel(model_dir=str(COSYVOICE_MODEL_DIR))
-    print(f"[cosyvoice] модель загружена, sample_rate={model.sample_rate}", flush=True)
+    print(
+        f"[cosyvoice] модель загружена за {time.time() - t0:.1f}s, "
+        f"sample_rate={model.sample_rate}",
+        flush=True,
+    )
     return model, set_all_random_seed
+
+
+def _shatter_determinism(model) -> None:
+    """Разрушает детерминизм, внесённый CosyVoice при загрузке модели.
+
+    CosyVoice в конструкторе CausalConditionalCFM делает set_all_random_seed(0)
+    и кеширует `self.rand_noise` — фиксированный гауссовский тензор. Из-за
+    этого:
+      (а) первый random.randint(...) всегда возвращает одно и то же значение
+          (Python random был только что сброшен на seed(0)), поэтому и все
+          последующие — тоже; seeds для вариантов повторяются между запусками
+          и каждый запуск даёт побайтово ИДЕНТИЧНЫЕ mp3;
+      (б) диффузионный шум `z` в flow_matching — это срез закешированного
+          тензора, одинаковый при каждом инференсе.
+
+    Фикс: (1) реседим Python random из системной энтропии, чтобы seed-ы
+    реально различались между запусками; (2) перегенерируем rand_noise
+    на каждый старт runner'а, чтобы акустические детали отличались.
+
+    Вызывается ОДИН РАЗ после загрузки модели — для batch-режима этого
+    достаточно: внутри одного процесса random.randint() даст разные seed-ы
+    для всех сцен, а rand_noise остаётся свежим тензором (но фиксированным
+    на весь батч — это нормально, варьируется через seed).
+    """
+    import torch as _torch  # noqa: PLC0415
+    random.seed()  # no-arg → os.urandom
+    try:
+        cfm = None
+        for attr in ("model", "flow"):
+            obj = model
+            for step in attr.split("."):
+                obj = getattr(obj, step, None)
+                if obj is None:
+                    break
+            if obj is not None and hasattr(obj, "decoder") and hasattr(obj.decoder, "rand_noise"):
+                cfm = obj.decoder
+                break
+            if obj is not None and hasattr(obj, "rand_noise"):
+                cfm = obj
+                break
+        if cfm is not None:
+            old_shape = cfm.rand_noise.shape
+            cfm.rand_noise = _torch.randn(old_shape)
+            print(
+                f"[cosyvoice] пересоздал rand_noise {tuple(old_shape)} — "
+                f"разрушаю детерминизм",
+                flush=True,
+            )
+        else:
+            print(
+                "[cosyvoice] не нашёл CausalConditionalCFM.rand_noise — "
+                "варианты могут звучать похоже",
+                flush=True,
+            )
+    except Exception as e:
+        print(f"[cosyvoice] не удалось подменить rand_noise: {e}", flush=True)
 
 
 def _ensure_ascii_prompt_path(prompt_wav: Path) -> Path:
@@ -132,8 +206,22 @@ def generate_variants(
     speed: float,
     prompt_wav: Path,
     prompt_text: str,
+    *,
+    model=None,
+    set_seed_fn=None,
+    progress_cb=None,
 ) -> dict:
-    """Синхронная генерация N вариантов; сохраняет в content/<scenario>/voiceover/audio/<base>/.
+    """Синхронная генерация N вариантов; сохраняет в
+    content/<scenario>/voiceover/audio/review_sentences/<base>/.
+
+    Параметры `model` / `set_seed_fn` опциональны — если переданы (auto-режим
+    с переиспользованием уже прогретой модели), функция НЕ грузит её заново
+    и НЕ дёргает _shatter_determinism (это уже было сделано после первого
+    load в run_batch). Если не переданы (одиночный режим) — грузим и
+    разрушаем детерминизм здесь, как раньше.
+
+    `progress_cb(produced_count)` вызывается после каждого готового варианта —
+    auto-режим использует это для обновления общего batch-статус-файла.
 
     Примечание: сохраняем через soundfile, а не torchaudio — torchaudio.save()
     на Windows падает на путях с не-ASCII символами (в проекте папки типа
@@ -167,52 +255,16 @@ def generate_variants(
         )
 
     ffmpeg = find_ffmpeg()
-    model, set_all_random_seed = load_cosyvoice_model()
+    if model is None:
+        # Одиночный режим: грузим модель и разрушаем детерминизм здесь.
+        # В auto-режиме это уже сделано в run_batch ОДИН раз на весь батч.
+        model, set_seed_fn = load_cosyvoice_model()
+        _shatter_determinism(model)
+    elif set_seed_fn is None:
+        raise ValueError("если передан model, нужен и set_seed_fn")
+    set_all_random_seed = set_seed_fn
     sample_rate = model.sample_rate
 
-    # ── Разрушаем детерминизм, внесённый самой моделью при загрузке ──
-    #
-    # CosyVoice в конструкторе CausalConditionalCFM делает set_all_random_seed(0)
-    # и кеширует `self.rand_noise` — фиксированный гауссовский тензор. Из-за
-    # этого:
-    #   (а) первый random.randint(...) ниже всегда возвращает одно и то же
-    #       значение (Python random был только что сброшен на seed(0)),
-    #       поэтому и все последующие — тоже; seeds для вариантов повторяются
-    #       между запусками и каждый запуск даёт побайтово ИДЕНТИЧНЫЕ mp3;
-    #   (б) диффузионный шум `z` в flow_matching — это срез закешированного
-    #       тензора, одинаковый при каждом инференсе.
-    #
-    # Фикс: (1) реседим Python random из системной энтропии, чтобы seed-ы
-    # реально различались между запусками; (2) перегенерируем rand_noise
-    # на каждый вызов runner'а, чтобы акустические детали отличались.
-    import torch as _torch  # noqa: PLC0415
-    random.seed()  # no-arg → os.urandom
-    # Ищем CausalConditionalCFM внутри модели и подменяем его rand_noise.
-    # Путь отличается у разных версий CosyVoice — пробуем несколько, молча
-    # пропускаем если не нашли (лучше потерять одну ось вариативности, чем
-    # упасть runner'ом).
-    try:
-        cfm = None
-        for attr in ("model", "flow"):
-            obj = model
-            for step in attr.split("."):
-                obj = getattr(obj, step, None)
-                if obj is None:
-                    break
-            if obj is not None and hasattr(obj, "decoder") and hasattr(obj.decoder, "rand_noise"):
-                cfm = obj.decoder
-                break
-            if obj is not None and hasattr(obj, "rand_noise"):
-                cfm = obj
-                break
-        if cfm is not None:
-            old_shape = cfm.rand_noise.shape
-            cfm.rand_noise = _torch.randn(old_shape)
-            print(f"[cosyvoice] пересоздал rand_noise {tuple(old_shape)} — разрушаю детерминизм", flush=True)
-        else:
-            print("[cosyvoice] не нашёл CausalConditionalCFM.rand_noise — варианты могут звучать похоже", flush=True)
-    except Exception as e:
-        print(f"[cosyvoice] не удалось подменить rand_noise: {e}", flush=True)
     # CosyVoice3 frontend сам вызывает load_wav на prompt внутри инференса,
     # поэтому передаём ПУТЬ к файлу, а не предзагруженный тензор.
     # Путь может содержать не-ASCII (например, «Ящик Пандоры»), поэтому копируем
@@ -272,6 +324,13 @@ def generate_variants(
                 pool.submit(save_wav_as_mp3, wav_path, mp3_path, ffmpeg)
             )
             results.append(mp3_path.name)
+            # Прогресс-колбэк: auto-режим обновит общий batch-статус, чтобы
+            # фронт видел движение пипсов даже внутри одной сцены.
+            if progress_cb is not None:
+                try:
+                    progress_cb(len(results))
+                except Exception as cb_err:  # noqa: BLE001
+                    print(f"[cosyvoice] progress_cb error: {cb_err}", flush=True)
         except Exception as e:
             import traceback  # noqa: PLC0415
             tb = traceback.format_exc()
@@ -322,6 +381,172 @@ def resolve_prompt_text(arg_value: str | None, prompt_wav: Path) -> str:
     raise FileNotFoundError(
         f"Не задан prompt-text и рядом с {prompt_wav} нет файла .txt"
     )
+
+
+# ── Batch / auto-режим ──────────────────────────────────────────────────────
+
+def batch_status_path(scenario: str) -> Path:
+    """Где лежит общий статус-файл прогона: read'ит фронт через
+    /api/cosyvoice-batch-status."""
+    return CONTENT_DIR / scenario / "voiceover" / "audio" / "_cosyvoice_batch.json"
+
+
+def batch_log_path(scenario: str) -> Path:
+    """Лог batch-прогона: один общий файл на весь auto-запуск, отдельно
+    от per-scene логов (review_sentences/<base>/_cosyvoice_runner.log)."""
+    return CONTENT_DIR / scenario / "voiceover" / "audio" / "_cosyvoice_batch.log"
+
+
+def read_sentence_text(scenario: str, base: str) -> str:
+    """Читает текст сцены из voiceover/texts/<base>.txt.
+    В одиночном режиме текст приходит CLI-параметром, в auto-режиме —
+    тянется из файла, чтобы не передавать гигабайт через argparse."""
+    txt_path = CONTENT_DIR / scenario / "voiceover" / "texts" / f"{base}.txt"
+    if not txt_path.exists():
+        raise FileNotFoundError(f"нет текста сцены: {txt_path}")
+    text = txt_path.read_text(encoding="utf-8").strip()
+    if not text:
+        raise ValueError(f"пустой файл текста: {txt_path}")
+    return text
+
+
+def write_batch_status(path: Path, payload: dict) -> None:
+    """Атомарный writer статуса: пишем во временный файл рядом и переименовываем,
+    чтобы фронт никогда не прочитал полупустой JSON."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    payload = {**payload, "updated_at": time.time()}
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    # На Windows os.replace атомарен и поверх существующего файла.
+    import os as _os  # noqa: PLC0415
+    _os.replace(tmp, path)
+
+
+def run_batch(args, prompt_text: str) -> int:
+    """Auto-режим: грузим модель ОДИН раз и идём по списку сцен из --bases.
+
+    Любая сцена может упасть — продолжаем со следующей; финальный exit-code
+    — 1, если был хотя бы один failure (но файлы успешных сцен останутся
+    на диске, фронт сможет их использовать)."""
+    bases = [b.strip() for b in (args.bases or "").split(",") if b.strip()]
+    if not bases:
+        print("[cosyvoice-batch] ❌ список --bases пуст", flush=True)
+        return 2
+
+    status_path = batch_status_path(args.scenario)
+    started_at = time.time()
+    base_status = {
+        "scenario": args.scenario,
+        "model": "Fun-CosyVoice3-0.5B",
+        "speed": args.speed,
+        "variants": args.variants,
+        "total": len(bases),
+        "queue": bases,
+        "started_at": started_at,
+        "active": True,
+        "done": False,
+        "current_base": None,
+        "current_index": 0,
+        "current_produced": 0,
+        "completed_bases": [],
+        "failed": [],
+        "error": None,
+    }
+    write_batch_status(status_path, base_status)
+
+    # ── Прогрев модели ──
+    try:
+        model, set_seed_fn = load_cosyvoice_model()
+        _shatter_determinism(model)
+    except Exception as e:
+        import traceback as _tb  # noqa: PLC0415
+        tb = _tb.format_exc()
+        print(f"[cosyvoice-batch] ❌ load_cosyvoice_model упал: {e}\n{tb}", flush=True)
+        write_batch_status(status_path, {
+            **base_status,
+            "active": False,
+            "done": True,
+            "error": f"load_model: {type(e).__name__}: {e}",
+        })
+        return 3
+
+    completed: list[str] = []
+    failed: list[dict] = []
+
+    print(
+        f"[cosyvoice-batch] старт: scenario={args.scenario!r} bases={len(bases)} "
+        f"speed={args.speed} variants={args.variants}",
+        flush=True,
+    )
+
+    for i, base in enumerate(bases):
+        # Обновляем общий статус ДО старта сцены — фронт сразу увидит,
+        # на какой строчке pip-индикатор должен крутиться.
+        write_batch_status(status_path, {
+            **base_status,
+            "current_base": base,
+            "current_index": i,
+            "current_produced": 0,
+            "completed_bases": list(completed),
+            "failed": list(failed),
+        })
+
+        def _on_progress(produced: int, _b=base, _i=i) -> None:
+            write_batch_status(status_path, {
+                **base_status,
+                "current_base": _b,
+                "current_index": _i,
+                "current_produced": produced,
+                "completed_bases": list(completed),
+                "failed": list(failed),
+            })
+
+        try:
+            text = read_sentence_text(args.scenario, base)
+            print(
+                f"[cosyvoice-batch] [{i + 1}/{len(bases)}] {base}: "
+                f"{text[:60]!r}…",
+                flush=True,
+            )
+            generate_variants(
+                scenario=args.scenario,
+                base=base,
+                text=text,
+                variants=args.variants,
+                speed=args.speed,
+                prompt_wav=args.prompt_wav,
+                prompt_text=prompt_text,
+                model=model,
+                set_seed_fn=set_seed_fn,
+                progress_cb=_on_progress,
+            )
+            completed.append(base)
+        except Exception as e:
+            import traceback as _tb  # noqa: PLC0415
+            tb = _tb.format_exc()
+            print(f"[cosyvoice-batch] FAIL {base}: {e}\n{tb}", flush=True)
+            failed.append({"base": base, "error": f"{type(e).__name__}: {e}"})
+
+    elapsed = time.time() - started_at
+    print(
+        f"[cosyvoice-batch] DONE: ok={len(completed)} fail={len(failed)} "
+        f"за {elapsed:.1f}s",
+        flush=True,
+    )
+
+    write_batch_status(status_path, {
+        **base_status,
+        "active": False,
+        "done": True,
+        "current_base": None,
+        "current_index": len(bases),
+        "current_produced": 0,
+        "completed_bases": completed,
+        "failed": failed,
+        "elapsed_sec": elapsed,
+    })
+
+    return 0 if not failed else 1
 
 
 def _preflight_check() -> list[str]:
@@ -377,11 +602,25 @@ def main() -> int:
         return 3
     print("[cosyvoice] preflight OK — все зависимости на месте", flush=True)
     parser = argparse.ArgumentParser(
-        description="CosyVoice3 runner — 10 вариантов озвучки с клонированием голоса"
+        description="CosyVoice3 runner — генерация вариантов озвучки с клонированием голоса"
     )
     parser.add_argument("--scenario", required=True, help="Имя папки в content/")
-    parser.add_argument("--base", required=True, help="База сцены, напр. sentence_003")
-    parser.add_argument("--text", required=True, help="Текст для озвучки")
+    # В одиночном режиме --base/--text обязательны; в --auto обязателен --bases.
+    # Делаем required=False и проверяем вручную ниже, чтобы дать понятные ошибки.
+    parser.add_argument("--base", help="База сцены (одиночный режим), напр. sentence_003")
+    parser.add_argument("--text", help="Текст для озвучки (одиночный режим)")
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="Batch-режим: загружаем модель один раз и обходим список --bases",
+    )
+    parser.add_argument(
+        "--bases",
+        default=None,
+        help="Запятыми разделённый список баз сцен для --auto, напр. "
+             "sentence_001,sentence_002,sentence_003. Тексты тянутся из "
+             "content/<scenario>/voiceover/texts/<base>.txt.",
+    )
     parser.add_argument("--variants", type=int, default=DEFAULT_VARIANTS)
     parser.add_argument("--speed", type=float, default=DEFAULT_SPEED)
     parser.add_argument(
@@ -402,6 +641,16 @@ def main() -> int:
         return 2
 
     prompt_text = resolve_prompt_text(args.prompt_text, args.prompt_wav)
+
+    if args.auto:
+        if not args.bases:
+            print("[cosyvoice] ❌ режим --auto требует --bases <список через запятую>", flush=True)
+            return 2
+        return run_batch(args, prompt_text)
+
+    if not args.base or not args.text:
+        print("[cosyvoice] ❌ одиночный режим требует --base и --text (или используй --auto)", flush=True)
+        return 2
 
     report = generate_variants(
         scenario=args.scenario,

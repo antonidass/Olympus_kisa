@@ -77,6 +77,8 @@ function api() {
     regen:   (name) => `/api/regenerate-cosyvoice/${encodeURIComponent(name)}`,
     regenEL: (name) => `/api/regenerate-elevenlabs/${encodeURIComponent(name)}`,
     finalize:(name) => `/api/finalize/${encodeURIComponent(name)}`,
+    cosyBatchStart:  (name) => `/api/cosyvoice-batch-start/${encodeURIComponent(name)}`,
+    cosyBatchStatus: (name) => `/api/cosyvoice-batch-status/${encodeURIComponent(name)}`,
   };
 }
 
@@ -2111,16 +2113,60 @@ function updateSidebarCosyBadge(base, cosy) {
   }
 }
 
+// ── CosyVoice speed (persisted UI setting) ────────────────────────────────
+//
+// Скорость синтеза CosyVoice 3 теперь редактируется из модалки регенерации
+// (раньше была захардкожена 1.1). Храним в localStorage, читаем валидируя:
+// если значение бьётся (NaN, вне диапазона) — откатываемся на дефолт 1.1.
+const COSY_SPEED_KEY = 'cosyVoiceSpeed';
+const COSY_SPEED_DEFAULT = 1.1;
+const COSY_SPEED_MIN = 0.7;
+const COSY_SPEED_MAX = 1.5;
+
+function getCosySpeed() {
+  const raw = localStorage.getItem(COSY_SPEED_KEY);
+  if (raw === null) return COSY_SPEED_DEFAULT;
+  const v = parseFloat(raw);
+  if (!Number.isFinite(v)) return COSY_SPEED_DEFAULT;
+  return Math.min(COSY_SPEED_MAX, Math.max(COSY_SPEED_MIN, v));
+}
+
+function setCosySpeed(value) {
+  const num = parseFloat(value);
+  if (!Number.isFinite(num)) return;
+  const clamped = Math.min(COSY_SPEED_MAX, Math.max(COSY_SPEED_MIN, num));
+  localStorage.setItem(COSY_SPEED_KEY, String(clamped));
+}
+// Inline oninput в bodyHtml модалки видит только глобальный scope.
+window.setCosySpeed = setCosySpeed;
+
+function speedControlHtml() {
+  const v = getCosySpeed();
+  return `
+    <div class="mb-stat">
+      <span class="mb-stat-label">Скорость</span>
+      <input type="number"
+             class="mb-speed-input"
+             id="cosy-speed-input"
+             min="${COSY_SPEED_MIN}"
+             max="${COSY_SPEED_MAX}"
+             step="0.05"
+             value="${v.toFixed(2)}"
+             oninput="window.setCosySpeed(this.value)" />
+      <span class="mb-stat-num" style="flex:0 0 auto">×</span>
+    </div>
+  `;
+}
+
 async function onRegenerate(base) {
   const isImage = state.mode === 'image';
 
   // Voice-режим: CosyVoice3 zero-shot c клонированием голоса.
-  // Параметры жёстко зафиксированы пользователем: 10 вариантов, скорость 1.0,
+  // Параметры: 10 вариантов, скорость берётся из getCosySpeed() (UI-input),
   // prompt-wav = content/Ящик Пандоры/TTS.mp3, prompt-text = TTS.txt.
   const cosyParams = {
     model: 'Fun-CosyVoice3-0.5B',
     variants: 10,
-    speed: 1.0,
     promptWav: 'content/Ящик Пандоры/TTS.mp3',
     promptTxt: 'content/Ящик Пандоры/TTS.txt',
   };
@@ -2131,7 +2177,7 @@ async function onRegenerate(base) {
     <div class="mb-stats" style="margin-top:12px">
       <div class="mb-stat"><span class="mb-stat-label">Модель</span><span class="mb-stat-num">CosyVoice3</span></div>
       <div class="mb-stat"><span class="mb-stat-label">Вариантов</span><span class="mb-stat-num">${cosyParams.variants}</span></div>
-      <div class="mb-stat"><span class="mb-stat-label">Скорость</span><span class="mb-stat-num">${cosyParams.speed}</span></div>
+      ${speedControlHtml()}
     </div>
     <div class="mb-note" style="margin-top:10px">
       Клонирование голоса из <code>${escapeHtml(cosyParams.promptWav)}</code>,
@@ -2158,14 +2204,18 @@ async function onRegenerate(base) {
   stopAudio();
 
   try {
-    const res = await postJSON(api().regen(state.scenario), { base });
+    // Скорость берём из localStorage в момент клика по «Запустить» — модалка
+    // успела сохранить пользовательский ввод через oninput.
+    const chosenSpeed = isImage ? null : getCosySpeed();
+    const body = isImage ? { base } : { base, speed: chosenSpeed };
+    const res = await postJSON(api().regen(state.scenario), body);
 
     // В voice-режиме выводим параметры озвучки уведомлением (как попросил пользователь).
     if (!isImage) {
       const parts = [
         `Модель: ${res.model || cosyParams.model}`,
         `Вариантов: ${res.variants ?? cosyParams.variants}`,
-        `Скорость: ${res.speed ?? cosyParams.speed}`,
+        `Скорость: ${res.speed ?? chosenSpeed}`,
         `Prompt: ${res.prompt_wav || cosyParams.promptWav}`,
       ];
       if (res.pid) parts.push(`PID: ${res.pid}`);
@@ -2193,7 +2243,7 @@ async function onRegenerate(base) {
       startCosyProgress(base, {
         requested: res.variants ?? cosyParams.variants,
         model: res.model || cosyParams.model,
-        speed: res.speed ?? cosyParams.speed,
+        speed: res.speed ?? chosenSpeed,
         promptWav: res.prompt_wav || cosyParams.promptWav,
       });
     }
@@ -2216,7 +2266,9 @@ async function onRegenerate(base) {
 const COSY_DEFAULT_META = {
   model: 'Fun-CosyVoice3-0.5B',
   requested: 10,
-  speed: 1.0,
+  // Геттер: при resume-е после перезагрузки страницы показываем актуальное
+  // значение из localStorage, а не давно зашитую константу.
+  get speed() { return getCosySpeed(); },
   promptWav: 'content/Ящик Пандоры/TTS.mp3',
 };
 
@@ -2351,7 +2403,7 @@ function stopCosyProgress() {
 const BATCH_META = {
   model: 'Fun-CosyVoice3-0.5B',
   variants: 10,
-  speed: 1.0,
+  get speed() { return getCosySpeed(); },
   promptWav: 'content/Ящик Пандоры/TTS.mp3',
 };
 
@@ -2414,15 +2466,16 @@ async function startCosyBatch() {
   const ok = await showModal({
     title: 'Озвучить весь миф?',
     bodyHtml: `
-      Запустим CosyVoice 3 последовательно на <b>${queue.length}</b> ${plural(queue.length, 'предложение', 'предложения', 'предложений')}.
+      Запустим CosyVoice 3 на <b>${queue.length}</b> ${plural(queue.length, 'предложение', 'предложения', 'предложений')}
+      одним прогоном — модель грузится <b>один раз</b> на весь батч.
       <div class="mb-stats" style="margin-top:12px">
         <div class="mb-stat"><span class="mb-stat-label">Модель</span><span class="mb-stat-num">${BATCH_META.model}</span></div>
         <div class="mb-stat"><span class="mb-stat-label">Вариантов на предложение</span><span class="mb-stat-num">${BATCH_META.variants}</span></div>
-        <div class="mb-stat"><span class="mb-stat-label">Скорость</span><span class="mb-stat-num">${BATCH_META.speed}</span></div>
+        ${speedControlHtml()}
       </div>
       <div class="mb-note" style="margin-top:10px">
         Клон из <code>${BATCH_META.promptWav}</code>.
-        Оценочное время — около <b>${Math.ceil(queue.length * 45 / 60)}</b> мин.
+        Оценочное время — около <b>${Math.ceil(queue.length * 30 / 60)}</b> мин (без повторных прогревов).
         Во время работы можно открывать любую уже готовую сцену и ревьюить.
       </div>
     `,
@@ -2430,12 +2483,15 @@ async function startCosyBatch() {
   });
   if (!ok) return;
 
+  // Фиксируем сценарий и параметры на момент клика — даже если пользователь
+  // уйдёт смотреть другой проект, поллинг этого не заметит.
+  const batchScenario = state.scenario;
+  const speed = getCosySpeed();
+
   state.cosyBatch = {
     active: true,
-    // Фиксируем сценарий на момент старта — все запросы и поллы должны идти
-    // по нему, даже если пользователь уйдёт смотреть другой проект.
-    scenario: state.scenario,
-    queue,
+    scenario: batchScenario,
+    queue,                                   // оставляем для совместимости с UI
     currentBase: null,
     total: queue.length,
     completed: 0,
@@ -2445,60 +2501,132 @@ async function startCosyBatch() {
     pollTimer: null,
     cancelRequested: false,
     error: null,
+    // Сцены, которые мы уже подтянули через refreshSceneVariants, чтобы
+    // не дёргать /api/scenes на каждый poll.
+    refreshedBases: new Set(),
+    pid: null,
   };
   renderSidebarAction();
-  batchNext();
-}
 
-async function batchNext() {
-  if (!state.cosyBatch.active) return;
-  if (state.cosyBatch.cancelRequested) {
+  // Один POST на весь батч — runner внутри обходит все сцены без перезагрузки модели.
+  try {
+    const res = await postJSON(api().cosyBatchStart(batchScenario), {
+      bases: queue,
+      speed,
+      variants: BATCH_META.variants,
+    });
+    state.cosyBatch.pid = res.pid;
+    state.cosyBatch.requested = res.variants ?? BATCH_META.variants;
+    toast(
+      `CosyVoice batch · ${queue.length} сцен · скорость ${res.speed ?? speed} · PID ${res.pid}`,
+      'success',
+    );
+  } catch (e) {
     state.cosyBatch.active = false;
-    state.cosyBatch.currentBase = null;
-    toast('Генерация прервана', 'success');
+    state.cosyBatch.error = e.message || 'не удалось запустить runner';
+    toast(`Ошибка запуска batch: ${state.cosyBatch.error}`, 'error');
     renderSidebarAction();
     renderSidebar();
     return;
   }
 
-  const next = state.cosyBatch.queue.shift();
+  pollCosyBatchStatus();
+}
+
+// Поллер общего статуса batch-прогона. Один runner, один субпроцесс — фронт
+// просто читает _cosyvoice_batch.json через эндпоинт каждые 1.5 сек и
+// обновляет UI: текущую сцену, счётчик готовых, пипсы внутри активной сцены,
+// прогресс новоготовых сцен (refreshSceneVariants) и финальное состояние.
+async function pollCosyBatchStatus() {
+  if (!state.cosyBatch.active) return;
   const batchScenario = state.cosyBatch.scenario;
-  if (!next) {
+
+  if (state.cosyBatch.cancelRequested) {
+    // Cancel в option A не убивает subprocess — runner доработает batch до конца.
+    // Просто перестаём поллить и уведомляем пользователя.
     state.cosyBatch.active = false;
     state.cosyBatch.currentBase = null;
-    toast(`Озвучка готова · ${state.cosyBatch.completed}/${state.cosyBatch.total}`, 'success');
+    toast('Поллинг остановлен (runner продолжит в фоне)', 'success');
     renderSidebarAction();
-    // Перезагружаем только если пользователь сейчас смотрит тот же сценарий,
-    // на котором крутился батч; иначе ему ничего обновлять не надо.
-    if (state.scenario === batchScenario) {
+    renderSidebar();
+    return;
+  }
+
+  let status;
+  try {
+    status = await fetchJSON(api().cosyBatchStatus(batchScenario));
+  } catch (e) {
+    // Сетевые сбои — повторим через 3 сек, не валим батч.
+    state.cosyBatch.pollTimer = setTimeout(pollCosyBatchStatus, 3000);
+    return;
+  }
+
+  // Если фронт ушёл с этого сценария — тихо продолжаем поллить, чтобы по
+  // возвращении пользователь увидел актуальное состояние; UI-обновления
+  // ниже все ограничены state.scenario.
+  const sameScenario = state.scenario === batchScenario;
+
+  // Обновляем агрегаты в state.cosyBatch.
+  state.cosyBatch.completed = status.completed_count || 0;
+  state.cosyBatch.currentBase = status.current_base || null;
+  state.cosyBatch.produced = status.current_produced || 0;
+  state.cosyBatch.requested = status.variants || state.cosyBatch.requested;
+  state.cosyBatch.total = status.total || state.cosyBatch.total;
+
+  // Пипсы для активной сцены (если она в текущем сценарии).
+  if (sameScenario && status.current_base) {
+    updateSidebarPips(status.current_base, state.cosyBatch.produced, state.cosyBatch.requested);
+  }
+
+  // Подтягиваем варианты для каждой новоготовой сцены ровно один раз.
+  if (sameScenario && Array.isArray(status.completed_bases)) {
+    for (const base of status.completed_bases) {
+      if (!state.cosyBatch.refreshedBases.has(base)) {
+        state.cosyBatch.refreshedBases.add(base);
+        // fire-and-forget: сцена обновится на следующем рендере,
+        // нам не важен порядок завершения refresh-ей.
+        refreshSceneVariants(batchScenario, base);
+      }
+    }
+  }
+
+  renderSidebarAction();
+
+  // Жёсткие ошибки (model load fail, отсутствующие зависимости) — runner
+  // пишет error в статус-файл и/или backend выставляет error_hint, и
+  // active=false без done=true. Останавливаемся.
+  const fatalError = status.error_hint && !status.active && !status.done;
+  if (fatalError) {
+    state.cosyBatch.active = false;
+    state.cosyBatch.error = status.error_hint;
+    toast(`Batch упал: ${status.error_hint}`, 'error');
+    renderSidebarAction();
+    renderSidebar();
+    return;
+  }
+
+  if (status.done) {
+    state.cosyBatch.active = false;
+    state.cosyBatch.currentBase = null;
+    const failed = (status.failed || []).length;
+    if (failed > 0) {
+      toast(
+        `Готово · ${status.completed_count}/${status.total} (${failed} с ошибкой)`,
+        'error',
+      );
+    } else {
+      toast(`Озвучка готова · ${status.completed_count}/${status.total}`, 'success');
+    }
+    renderSidebarAction();
+    if (sameScenario) {
+      // Полный reload — подхватит финальный статус всех сцен и снимет
+      // оранжевый regen-маркер с одобренных.
       await loadScenario(state.scenario, state.activeSceneBase);
     }
     return;
   }
 
-  state.cosyBatch.currentBase = next;
-  state.cosyBatch.produced = 0;
-  renderSidebarAction();
-  renderSidebar();
-
-  try {
-    const res = await postJSON(api().regen(batchScenario), { base: next });
-    state.cosyBatch.requested = res.variants ?? BATCH_META.variants;
-
-    await waitForCosyScene(next, state.cosyBatch.requested);
-    state.cosyBatch.completed++;
-    // Подтягиваем свежие варианты для только что готовой сцены, чтобы
-    // ревьюер мог открыть её и услышать озвучку, не дожидаясь конца батча.
-    await refreshSceneVariants(batchScenario, next);
-    renderSidebarAction();
-    batchNext();
-  } catch (e) {
-    state.cosyBatch.active = false;
-    state.cosyBatch.error = e.message || 'неизвестная ошибка';
-    toast(`Ошибка на ${next}: ${state.cosyBatch.error}`, 'error');
-    renderSidebarAction();
-    renderSidebar();
-  }
+  state.cosyBatch.pollTimer = setTimeout(pollCosyBatchStatus, 1500);
 }
 
 // Подтягиваем варианты конкретной сцены без полного reload-а сайдбара —
@@ -2524,37 +2652,6 @@ async function refreshSceneVariants(scenario, base) {
   } catch (e) {
     console.warn('refreshSceneVariants failed', e);
   }
-}
-
-function waitForCosyScene(base, requested) {
-  // Имя сценария фиксируем в момент старта поллинга — иначе при переключении
-  // проекта запросы пойдут не в ту папку и батч зависнет навсегда.
-  const scenario = state.cosyBatch.scenario;
-  return new Promise((resolve, reject) => {
-    const poll = async () => {
-      if (state.cosyBatch.cancelRequested) {
-        return reject(new Error('отменено'));
-      }
-      try {
-        const url = `/api/cosyvoice-status/${encodeURIComponent(scenario)}/${encodeURIComponent(base)}`;
-        const status = await fetchJSON(url);
-
-        state.cosyBatch.produced = status.produced || 0;
-        updateSidebarPips(base, state.cosyBatch.produced, requested);
-        renderSidebarAction();
-
-        if (status.done) return resolve();
-        // Runner упал, если есть error_hint и ни одного файла не родилось
-        if (status.error_hint && (status.produced || 0) === 0) {
-          return reject(new Error(status.error_hint));
-        }
-        state.cosyBatch.pollTimer = setTimeout(poll, 1500);
-      } catch (e) {
-        state.cosyBatch.pollTimer = setTimeout(poll, 3000);
-      }
-    };
-    poll();
-  });
 }
 
 function cancelCosyBatch() {
