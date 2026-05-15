@@ -15,6 +15,8 @@ Distribute Videos — переименование Flow-видео по сцен
 from __future__ import annotations
 
 import argparse
+import hashlib
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +29,7 @@ from PIL import Image, ImageOps
 VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 SCENE_RENAMED_PREFIX = "scene_"
+SCENE_VIDEO_RE = re.compile(r"^scene_(?P<scene>\d+)_v(?P<variant>\d+)\.", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -122,6 +125,59 @@ def collect_videos(video_dir: Path) -> list[Path]:
         and path.suffix.lower() in VIDEO_EXTS
         and not path.name.lower().startswith(SCENE_RENAMED_PREFIX)
     )
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def filter_duplicate_videos(
+    video_dir: Path,
+    video_paths: list[Path],
+    execute: bool,
+) -> tuple[list[Path], int]:
+    raw_paths = {path.resolve() for path in video_paths}
+    seen_hashes: set[str] = set()
+
+    for path in sorted(video_dir.iterdir()):
+        if (
+            path.is_file()
+            and path.suffix.lower() in VIDEO_EXTS
+            and path.resolve() not in raw_paths
+        ):
+            seen_hashes.add(file_sha256(path))
+
+    unique_paths: list[Path] = []
+    skipped = 0
+    for path in video_paths:
+        digest = file_sha256(path)
+        if digest in seen_hashes:
+            skipped += 1
+            if execute:
+                path.unlink()
+            continue
+        seen_hashes.add(digest)
+        unique_paths.append(path)
+
+    return unique_paths, skipped
+
+
+def next_scene_variants(video_dir: Path) -> dict[int, int]:
+    max_variants: dict[int, int] = {}
+    for path in video_dir.iterdir():
+        if not path.is_file() or path.suffix.lower() not in VIDEO_EXTS:
+            continue
+        match = SCENE_VIDEO_RE.match(path.name)
+        if not match:
+            continue
+        scene_num = int(match.group("scene"))
+        variant_num = int(match.group("variant"))
+        max_variants[scene_num] = max(max_variants.get(scene_num, 0), variant_num)
+    return {scene_num: variant_num + 1 for scene_num, variant_num in max_variants.items()}
 
 
 def build_fingerprint(image_path: Path) -> Fingerprint:
@@ -226,6 +282,7 @@ def match_video(sample: VideoSample, scenes: list[SceneImage]) -> MatchResult:
 def plan_renames(
     samples: list[VideoSample],
     matches: dict[Path, MatchResult],
+    video_dir: Path,
 ) -> list[tuple[Path, Path, MatchResult]]:
     grouped: dict[int, list[tuple[VideoSample, MatchResult]]] = {}
     for sample in samples:
@@ -233,11 +290,14 @@ def plan_renames(
         grouped.setdefault(match.scene_num, []).append((sample, match))
 
     plan: list[tuple[Path, Path, MatchResult]] = []
+    next_variants = next_scene_variants(video_dir)
     for scene_num, entries in sorted(grouped.items()):
         entries.sort(key=lambda item: (item[1].score, item[0].video_path.name.lower()))
-        for variant_idx, (sample, match) in enumerate(entries, start=1):
+        variant_idx = next_variants.get(scene_num, 1)
+        for sample, match in entries:
             dst = sample.video_path.with_name(f"scene_{scene_num:02d}_v{variant_idx}.mp4")
             plan.append((sample.video_path, dst, match))
+            variant_idx += 1
     return plan
 
 
@@ -359,6 +419,17 @@ def main() -> int:
     if not videos:
         print(f"ERROR: нет сырых видео в {video_dir}", file=sys.stderr)
         return 1
+    videos, skipped_duplicates = filter_duplicate_videos(
+        video_dir,
+        videos,
+        execute=args.execute,
+    )
+    if skipped_duplicates:
+        action = "удалено" if args.execute else "будет пропущено"
+        print(f"Дубликатов видео по SHA256: {skipped_duplicates} ({action}).")
+    if not videos:
+        print("Нет новых уникальных видео для переименования.")
+        return 0
 
     print(f"Папка мифа:     {myth_dir}")
     print(f"Approved image: {approved_dir}")
@@ -369,7 +440,7 @@ def main() -> int:
         frame_dir = Path(temp_dir_str)
         samples = sample_videos(videos, ffmpeg, frame_dir)
         matches = {sample.video_path: match_video(sample, scenes) for sample in samples}
-        plan = plan_renames(samples, matches)
+        plan = plan_renames(samples, matches, video_dir)
         print_plan(plan, scene_count=len(scenes), sample_count=len(samples))
 
         if not args.execute:

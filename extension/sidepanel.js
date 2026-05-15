@@ -20,6 +20,7 @@ const state = {
   downloadVideos: true,
   seenDownloadIds: new Set(),
   seenDownloadKeys: new Set(),
+  importedDownloadKeys: new Set(),
 };
 
 const FLOW_HOST_MARKERS = [
@@ -207,6 +208,14 @@ function markDownloadSeen(item) {
   if (item?.filename) state.seenDownloadKeys.add(item.filename);
 }
 
+function downloadImportKey(path, target) {
+  return [
+    state.scenario || "",
+    target || "",
+    String(path || "").toLowerCase(),
+  ].join("|");
+}
+
 function alreadySawDownload(item) {
   return (
     (item?.id != null && state.seenDownloadIds.has(item.id)) ||
@@ -236,6 +245,17 @@ function handleFlowDownload(msg, fromPending = false) {
     return;
   }
 
+  const importKey = downloadImportKey(msg.path || msg.filename || "", target);
+  if (state.importedDownloadKeys.has(importKey)) {
+    log(`${fileLabel}: duplicate download event skipped`, "warn");
+    return;
+  }
+  state.importedDownloadKeys.add(importKey);
+  markDownloadSeen({
+    id: msg.downloadId ?? msg.id,
+    filename: msg.path || msg.filename,
+  });
+
   log(
     `${fromPending ? "pending" : "Flow"} download → импорт в ${targetLabel(target)} для «${state.scenario}»…`,
     "ok"
@@ -249,15 +269,18 @@ function handleFlowDownload(msg, fromPending = false) {
     },
     (resp) => {
       if (chrome.runtime.lastError) {
+        state.importedDownloadKeys.delete(importKey);
         log(`import: ${chrome.runtime.lastError.message}`, "err");
         return;
       }
       if (!resp || !resp.ok) {
+        state.importedDownloadKeys.delete(importKey);
         log(`import не дошёл до webapp: ${resp?.error || "?"}`, "err");
         return;
       }
       const r = resp.body || {};
       if (!r.ok) {
+        state.importedDownloadKeys.delete(importKey);
         log(`import упал: ${r.error || "неизвестная ошибка"}`, "err");
         return;
       }

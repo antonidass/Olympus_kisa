@@ -103,6 +103,7 @@ chrome.downloads.onChanged.addListener(async (delta) => {
   if (!looksLikeFlowDownload(item) && !armed) return;
   const payload = {
     type: "flow_download_ready",
+    downloadId: item.id,
     path: item.filename,
     url: item.finalUrl || item.url,
     filename: item.filename.split(/[\\/]/).pop() || item.filename,

@@ -35,6 +35,7 @@ Distribute Stickers — раскладка ZIP-архива со стикера�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import shutil
 import sys
@@ -220,7 +221,7 @@ def match_file_to_scene(
 
 
 def _level_glyph(level: int) -> str:
-    return {MATCH_STRICT: "✓", MATCH_SUBSTR: "~", MATCH_FUZZY: "?", MATCH_MANUAL: "M"}[level]
+    return {MATCH_STRICT: "OK", MATCH_SUBSTR: "~", MATCH_FUZZY: "?", MATCH_MANUAL: "M"}[level]
 
 
 def _output_name(scene: Scene, entry: FileEntry) -> str:
@@ -231,6 +232,34 @@ def _output_name(scene: Scene, entry: FileEntry) -> str:
     if ext == ".jpeg":
         ext = ".jpg"  # унифицируем
     return f"scene_{scene.num:02d}_{marker_joined}{ext}"
+
+
+def _output_path(target_dir: Path, scene: Scene, entry: FileEntry, scene_folders: bool) -> Path:
+    out_name = _output_name(scene, entry)
+    if scene_folders:
+        return target_dir / f"scene_{scene.num:02d}" / out_name
+    return target_dir / out_name
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def collect_existing_hashes(root: Path, exclude: set[Path] | None = None) -> set[str]:
+    exclude = exclude or set()
+    hashes: set[str] = set()
+    if not root.exists():
+        return hashes
+    for path in root.rglob("*"):
+        if path.resolve() in exclude:
+            continue
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTS:
+            hashes.add(file_sha256(path))
+    return hashes
 
 
 def _resolve_stickers_md(input_path: Path) -> Path:
@@ -298,7 +327,7 @@ def _collect_files(folder: Path) -> list[FileEntry]:
     for pos, p in enumerate(paths):
         e = parse_filename(p, archive_pos=pos)
         if e is None:
-            print(f"  ⚠ пропускаю файл с нестандартным именем: {p.name}", file=sys.stderr)
+            print(f"  WARN пропускаю файл с нестандартным именем: {p.name}", file=sys.stderr)
             continue
         entries.append(e)
     return entries
@@ -329,6 +358,16 @@ def main() -> int:
         "--fuzzy",
         action="store_true",
         help="Разрешить fuzzy-совпадение по пересечению слов (если в Flow редактировал промпт)",
+    )
+    parser.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="Разрешить частичный набор: сцены без файла-сцены не считаются ошибкой.",
+    )
+    parser.add_argument(
+        "--scene-folders",
+        action="store_true",
+        help="Класть результат в подпапки scene_NN внутри images/stickers/.",
     )
     parser.add_argument(
         "--map",
@@ -364,7 +403,7 @@ def main() -> int:
     if errors:
         print("ERROR: маркеры не уникальны:", file=sys.stderr)
         for e in errors:
-            print(f"  • {e}", file=sys.stderr)
+            print(f"  - {e}", file=sys.stderr)
         return 1
 
     # Распаковка
@@ -404,30 +443,31 @@ def main() -> int:
         print("План раскладки:")
         for scene_num in sorted(by_scene):
             m = by_scene[scene_num]
-            out_name = _output_name(m.scene, m.file)
+            dst = _output_path(target_dir, m.scene, m.file, args.scene_folders)
+            out_rel = dst.relative_to(target_dir)
             glyph = _level_glyph(m.level)
             print(
                 f"  {glyph} scene_{scene_num:02d}: {m.file.path.name}\n"
-                f"       → {target_dir.name}/{out_name}"
+                f"       -> {target_dir.name}/{out_rel}"
             )
 
         missing = [sc for sc in scenes.values() if sc.num not in by_scene]
         if missing:
             print()
-            print(f"⚠ Не нашёл стикер для {len(missing)} сцен:")
+            print(f"WARN Не нашёл стикер для {len(missing)} сцен:")
             for sc in missing:
                 print(f"  scene_{sc.num:02d}: {sc.marker}")
 
         if unmatched:
             print()
-            print(f"⚠ Не сопоставлено с какой-либо сценой ({len(unmatched)} файлов):")
+            print(f"WARN Не сопоставлено с какой-либо сценой ({len(unmatched)} файлов):")
             for e in unmatched:
                 print(f"  {e.path.name}  (prefix words: {' '.join(e.prefix_words[:6])})")
             print("  Используй --map 'prefix_words=N' для ручного override или --fuzzy.")
 
         if duplicates:
             print()
-            print(f"⚠ Несколько файлов на одну сцену (выбран более сильный матч):")
+            print(f"WARN Несколько файлов на одну сцену (выбран более сильный матч):")
             for losing, winning in duplicates:
                 print(
                     f"  scene_{winning.scene.num:02d}: "
@@ -435,13 +475,18 @@ def main() -> int:
                     f"проиграл {losing.file.path.name} ({_level_glyph(losing.level)})"
                 )
 
-        if missing or unmatched:
+        has_blocking_errors = bool(unmatched) or (bool(missing) and not args.allow_missing)
+        if has_blocking_errors:
             print()
             print("ERROR: остались несопоставленные файлы / сцены без стикеров. "
                   "Исправь и перезапусти. Без --execute ничего не двигалось.", file=sys.stderr)
             if not args.execute:
                 return 1
             return 1
+
+        if missing and args.allow_missing:
+            print()
+            print(f"Partial mode: пропускаю {len(missing)} сцен без стикеров.")
 
         # ─── Выполнение ────────────────────────────────────────────────────
         if not args.execute:
@@ -451,18 +496,44 @@ def main() -> int:
             return 0
 
         print()
-        print(f"Переименовываю {len(by_scene)} файлов в {target_dir}…")
+        print(f"Переименовываю {len(by_scene)} файлов в {target_dir}...")
+        source_paths = {e.path.resolve() for e in entries}
+        existing_hashes = collect_existing_hashes(target_dir, exclude=source_paths)
+        moved_count = 0
+        skipped_duplicates = 0
+        already_placed = 0
         for scene_num in sorted(by_scene):
             m = by_scene[scene_num]
-            dst = target_dir / _output_name(m.scene, m.file)
+            src_hash = file_sha256(m.file.path)
+            dst = _output_path(target_dir, m.scene, m.file, args.scene_folders)
+
+            if m.file.path.resolve() == dst.resolve():
+                already_placed += 1
+                existing_hashes.add(src_hash)
+                print(f"  OK already placed: {m.file.path.name}")
+                continue
+
+            if src_hash in existing_hashes:
+                skipped_duplicates += 1
+                m.file.path.unlink()
+                print(f"  SKIP duplicate: {m.file.path.name}")
+                continue
+
             if dst.exists():
-                print(f"  ⚠ уже существует, перезаписываю: {dst.name}")
+                print(f"  WARN уже существует, перезаписываю: {dst.name}")
                 dst.unlink()
+            dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(m.file.path), str(dst))
-            print(f"  {m.file.path.name} → {dst.name}")
+            existing_hashes.add(src_hash)
+            moved_count += 1
+            print(f"  {m.file.path.name} -> {dst.relative_to(target_dir)}")
 
         print()
-        print(f"Готово: {len(by_scene)} стикеров в {target_dir}.")
+        print(
+            f"Готово: {moved_count} стикеров в {target_dir}, "
+            f"уже лежали на месте {already_placed}, "
+            f"дубликатов пропущено {skipped_duplicates}."
+        )
         return 0
 
     finally:
@@ -470,7 +541,7 @@ def main() -> int:
             try:
                 shutil.rmtree(src_dir)
             except OSError as exc:
-                print(f"  ⚠ не смог удалить {src_dir}: {exc}", file=sys.stderr)
+                print(f"  WARN не смог удалить {src_dir}: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":

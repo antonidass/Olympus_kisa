@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -2808,6 +2809,32 @@ def _extension_unique_path(dest_dir: Path, filename: str) -> Path:
         idx += 1
 
 
+def _extension_file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _extension_existing_hashes(dest_dir: Path, allowed_exts: set[str]) -> set[str]:
+    if not dest_dir.exists():
+        return set()
+    hashes: set[str] = set()
+    for path in dest_dir.iterdir():
+        if path.is_file() and path.suffix.lower() in allowed_exts:
+            hashes.add(_extension_file_sha256(path))
+    return hashes
+
+
+def _extension_zip_member_sha256(zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> str:
+    digest = hashlib.sha256()
+    with zf.open(info) as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _extension_import_single_file(src: Path, dest_dir: Path, allowed_exts: set[str]) -> dict:
     ext = src.suffix.lower()
     if ext not in allowed_exts:
@@ -2815,6 +2842,14 @@ def _extension_import_single_file(src: Path, dest_dir: Path, allowed_exts: set[s
             f"Неподдерживаемый тип файла {src.name!r}. Ожидался один из: {sorted(allowed_exts)}"
         )
     dest_dir.mkdir(parents=True, exist_ok=True)
+    src_hash = _extension_file_sha256(src)
+    if src_hash in _extension_existing_hashes(dest_dir, allowed_exts):
+        return {
+            "imported_count": 0,
+            "skipped_count": 1,
+            "files": [],
+            "skipped": [src.name],
+        }
     dst = _extension_unique_path(dest_dir, _extension_safe_name(src.name))
     shutil.copy2(src, dst)
     return {
@@ -2830,8 +2865,10 @@ def _extension_import_zip(src_zip: Path, dest_dir: Path, allowed_exts: set[str])
     dest_dir.mkdir(parents=True, exist_ok=True)
     imported: list[str] = []
     skipped: list[str] = []
+    matched_count = 0
 
     with zipfile.ZipFile(src_zip) as zf:
+        existing_hashes = _extension_existing_hashes(dest_dir, allowed_exts)
         for info in zf.infolist():
             if info.is_dir():
                 continue
@@ -2843,12 +2880,18 @@ def _extension_import_zip(src_zip: Path, dest_dir: Path, allowed_exts: set[str])
             if ext not in allowed_exts:
                 skipped.append(inner_name)
                 continue
+            matched_count += 1
+            member_hash = _extension_zip_member_sha256(zf, info)
+            if member_hash in existing_hashes:
+                skipped.append(inner_name)
+                continue
             dst = _extension_unique_path(dest_dir, safe_name)
             with zf.open(info) as src_fh, dst.open("wb") as dst_fh:
                 shutil.copyfileobj(src_fh, dst_fh)
+            existing_hashes.add(member_hash)
             imported.append(dst.name)
 
-    if not imported:
+    if not imported and matched_count == 0:
         raise ValueError(
             f"В архиве {src_zip.name!r} не нашлось файлов подходящего типа: {sorted(allowed_exts)}"
         )

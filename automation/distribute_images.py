@@ -25,6 +25,7 @@ imagefx_runner.py) и экспортированы одним архивом «D
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import shutil
 import sys
@@ -41,6 +42,7 @@ FILENAME_RE = re.compile(
 
 # Поддерживаемые расширения (lowercase)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+VARIANT_RE = re.compile(r"^v(?P<num>\d+)\.(?:jpe?g|png|webp)$", re.IGNORECASE)
 
 
 @dataclass
@@ -305,6 +307,38 @@ def collect_images(folder: Path) -> list[Path]:
     )
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def collect_existing_hashes(roots: list[Path]) -> set[str]:
+    hashes: set[str] = set()
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTS:
+                hashes.add(file_sha256(path))
+    return hashes
+
+
+def next_variant_number(scene_dir: Path) -> int:
+    max_num = 0
+    if not scene_dir.exists():
+        return 1
+    for path in scene_dir.iterdir():
+        if not path.is_file():
+            continue
+        match = VARIANT_RE.match(path.name)
+        if match:
+            max_num = max(max_num, int(match.group("num")))
+    return max_num + 1
+
+
 def detect_myth_dir(input_path: Path) -> Path | None:
     """
     По пути к архиву/папке определяет корень мифа (где лежит prompts/images.md).
@@ -325,7 +359,7 @@ def detect_myth_dir(input_path: Path) -> Path | None:
 
 
 _LEVEL_LABELS = {
-    MATCH_STRICT: "✓",   # строгий префикс
+    MATCH_STRICT: "OK",  # строгий префикс
     MATCH_SUBSTR: "~",   # Flow съел первые слова маркера
     MATCH_FUZZY:  "?",   # пересечение слов — нужно подтвердить визуально
 }
@@ -407,7 +441,7 @@ def main() -> int:
         print()
         print("ERROR: subject-маркеры не уникальны:")
         for e in errors:
-            print(f"  • {e}")
+            print(f"  - {e}")
         print()
         print("См. CONTEXT.md, раздел «Уникальный subject-маркер в начале каждого промпта».")
         return 1
@@ -431,7 +465,7 @@ def main() -> int:
         # Execute: реально распаковываем (или используем существующую папку)
         if is_zip:
             unpack_dir = myth_dir / "images" / "_unpacked"
-            print(f"Распаковываю {input_path.name} → {unpack_dir}")
+            print(f"Распаковываю {input_path.name} -> {unpack_dir}")
             file_paths = extract_archive(input_path, unpack_dir)
             cleanup_unpacked = unpack_dir
         elif input_path.is_dir():
@@ -495,7 +529,7 @@ def main() -> int:
 
     # Печать плана
     print("=== ПЛАН РАСКЛАДКИ ===")
-    print("    Уровни доверия: ✓ строгий / ~ Flow обрезал маркер / ? fuzzy bag-of-words")
+    print("    Уровни доверия: OK строгий / ~ Flow обрезал маркер / ? fuzzy bag-of-words")
     print()
     for scene_num in sorted(plan.keys()):
         files_for_scene = sorted(plan[scene_num], key=lambda x: x[1].variant_idx)
@@ -506,7 +540,7 @@ def main() -> int:
         print(f"scene_{scene_num:02d}  {head_mark}  ({len(files_for_scene)} файл.)  · «{sc.marker}»")
         for new_v, (level, entry) in enumerate(files_for_scene, start=1):
             mark = _LEVEL_LABELS[level]
-            print(f"   v{new_v}.jpg  {mark}  ←  {entry.path.name}")
+            print(f"   v{new_v}.jpg  {mark}  <-  {entry.path.name}")
     print()
 
     fuzzy_files = sum(1 for files in plan.values() for level, _ in files if level == MATCH_FUZZY)
@@ -514,7 +548,7 @@ def main() -> int:
     if substr_files or fuzzy_files:
         print(f"Совпадений с пометкой: ~ (Flow обрезал) {substr_files},  ? (fuzzy) {fuzzy_files}")
         if fuzzy_files:
-            print("  ? — рекомендую открыть по одной картинке из такой группы и сверить с маркером сцены.")
+            print("  ? - рекомендую открыть по одной картинке из такой группы и сверить с маркером сцены.")
         print()
 
     # Несопоставленные — группируем по префиксу, считаем подсказку по позиции в архиве
@@ -523,7 +557,7 @@ def main() -> int:
 
         # Сначала те где даже имя не парсится
         for path, reason in unparseable:
-            print(f"   {path.name}  —  {reason}")
+            print(f"   {path.name}  -  {reason}")
 
         # Группируем оставшиеся по prefix_words
         groups: dict[tuple[str, ...], list[FileEntry]] = {}
@@ -551,7 +585,7 @@ def main() -> int:
             if suggestion is not None:
                 sc_marker = scenes[suggestion].marker
                 print(
-                    f"      → по порядку в архиве вероятно scene_{suggestion:02d}  «{sc_marker}»"
+                    f"      -> по порядку в архиве вероятно scene_{suggestion:02d}  «{sc_marker}»"
                 )
                 suggested_maps.append(f'--map "{prefix_str}={suggestion}"')
             else:
@@ -601,17 +635,33 @@ def main() -> int:
 
     # Выполнение
     print("=== ВЫПОЛНЕНИЕ ===")
+    existing_hashes = collect_existing_hashes(
+        [review_dir, myth_dir / "images" / "approved_images"]
+    )
+    moved_count = 0
+    skipped_duplicates = 0
     for scene_num in sorted(plan.keys()):
         files_for_scene = sorted(plan[scene_num], key=lambda x: x[1].variant_idx)
         scene_dir = review_dir / f"scene_{scene_num:02d}"
         scene_dir.mkdir(parents=True, exist_ok=True)
-        # Если в папке уже есть файлы — добавляем номера дальше последнего v_N
-        existing = sorted(scene_dir.glob("v*.jpg"))
-        offset = len(existing)
-        for new_v, (level, entry) in enumerate(files_for_scene, start=offset + 1):
+        new_v = next_variant_number(scene_dir)
+        for level, entry in files_for_scene:
+            entry_hash = file_sha256(entry.path)
+            if entry_hash in existing_hashes:
+                skipped_duplicates += 1
+                entry.path.unlink()
+                print(f"   SKIP duplicate: {entry.path.name}")
+                continue
+
             dst = scene_dir / f"v{new_v}.jpg"
+            while dst.exists():
+                new_v += 1
+                dst = scene_dir / f"v{new_v}.jpg"
             shutil.move(str(entry.path), str(dst))
-            print(f"   scene_{scene_num:02d}/v{new_v}.jpg  ←  {entry.path.name}")
+            existing_hashes.add(entry_hash)
+            moved_count += 1
+            print(f"   scene_{scene_num:02d}/v{new_v}.jpg  <-  {entry.path.name}")
+            new_v += 1
     print()
 
     # Очистка пустой _unpacked
@@ -623,8 +673,10 @@ def main() -> int:
             print(f"Папка {cleanup_unpacked.name}/ не пустая — оставляю как есть.")
 
     print()
-    total_moved = sum(len(v) for v in plan.values())
-    print(f"ГОТОВО: разложено {total_moved} файл(ов) по {len(plan)} сценам.")
+    print(
+        f"ГОТОВО: разложено {moved_count} файл(ов), "
+        f"дубликатов пропущено {skipped_duplicates}."
+    )
     return 0
 
 
