@@ -50,6 +50,20 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+# Архив — готовые видео и архивы, слишком тяжёлые для GitHub (>100 MB)
+content/архив/**/*.mp4
+content/архив/**/*.zip
+content/архив/**/*.mp3
+
+# Аудио и видео ассеты, не нужные в репо
+assets/music/
+assets/TTS/
+
 # Папки не для репо
 кисы/
 конкуренты/
+
+# Временные файлы webapp
+webapp/static/_mockups/
+automation/_cosyvoice_server.log
+automation/_cosyvoice_server.pid
