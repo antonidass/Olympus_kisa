@@ -50,6 +50,7 @@ class Scene:
     num: int
     marker: str  # первая фраза промпта, lowercase, без запятой и пробелы между словами
     marker_words: tuple[str, ...]
+    prompt_bag: frozenset[str] = frozenset()  # все токены тела промпта (для fuzzy)
 
 
 @dataclass
@@ -80,17 +81,54 @@ def parse_images_md(path: Path) -> dict[int, Scene]:
             continue
         marker_raw = m.group(1).strip().lower()
         words = tuple(_tokenize(marker_raw))
-        scenes[scene_num] = Scene(num=scene_num, marker=marker_raw, marker_words=words)
+
+        # Полное тело промпта (всё после `**Промпт:** ` до конца строки
+        # или до следующего markdown-разделителя) → bag-of-words для fuzzy.
+        # Flow в новых именах файлов вытаскивает ключевые слова из любого
+        # места промпта (например `Zeus_strikes_Cronus_with_lightning` для
+        # сцены с маркером «thunder son arrives one second before»), и
+        # матча только по первой фразе уже недостаточно.
+        full_match = re.search(
+            r"^\*\*Промпт:\*\*\s+(.+?)(?=\n\n|\n---|\Z)",
+            body,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+        full_text = full_match.group(1) if full_match else marker_raw
+        prompt_bag = frozenset(_tokenize(full_text))
+
+        scenes[scene_num] = Scene(
+            num=scene_num,
+            marker=marker_raw,
+            marker_words=words,
+            prompt_bag=prompt_bag,
+        )
 
     return scenes
 
 
 def _tokenize(s: str) -> list[str]:
-    """Лёгкая токенизация: lowercase, выкидываем пунктуацию, оставляем дефисы внутри слов."""
+    """Лёгкая токенизация: lowercase, дефисы тоже разделяют слова.
+
+    Дефисы режутся (sky-canopy → sky, canopy), поскольку Google Flow при
+    генерации имени файла всегда разваливает дефисы (earth-children → earth,
+    children) и без симметричного расщепления маркера слова не матчатся.
+
+    Хвостовые ellipsis-токены (`b…`, `e…` — Flow обрезает имя при превышении
+    лимита и оставляет `…`) и одиночные символы выкидываются, чтобы не
+    портить bag-of-words счёт.
+    """
     s = s.lower()
-    # заменяем _ и пунктуацию на пробелы
-    s = re.sub(r"[_,.;:!?'\"()]", " ", s)
-    return s.split()
+    # заменяем _ и пунктуацию (включая дефис) на пробелы
+    s = re.sub(r"[_\-,.;:!?'\"()]", " ", s)
+    tokens = s.split()
+    cleaned: list[str] = []
+    for t in tokens:
+        # выкидываем хвостовой ellipsis-мусор от Flow ("b…", "e…", "…")
+        t = t.replace("…", "").replace("...", "")
+        # одиночные символы и пустые токены — мусор, не сигнал
+        if len(t) >= 2:
+            cleaned.append(t)
+    return cleaned
 
 
 def validate_unique_markers(scenes: dict[int, Scene]) -> list[str]:
@@ -141,8 +179,8 @@ def match_file_to_scene(
 ) -> tuple[int, int, Scene] | None:
     """
     Возвращает (level, score, scene) где level ∈ {1,2,3} — степень доверия,
-    score — сколько слов совпало. Чем меньше level, тем строже совпадение.
-    Если allow_fuzzy=False, level 3 не возвращается.
+    score — сводный счёт (больше = увереннее). Чем меньше level, тем строже
+    совпадение. Если allow_fuzzy=False, level 3 не возвращается.
     """
     best: tuple[int, int, Scene] | None = None
     for sc in scenes.values():
@@ -158,30 +196,85 @@ def match_file_to_scene(
 def _score_against(
     fwords: tuple[str, ...], sc: Scene, allow_fuzzy: bool
 ) -> tuple[int, int] | None:
-    """Находит лучший уровень и счёт совпадения filename ↔ marker сцены."""
+    """Находит лучший уровень и счёт совпадения filename ↔ сцены.
+
+    Уровни:
+      MATCH_STRICT (1) — filename начинается префиксом subject-маркера
+        (≥3 слов или ≥2 если filename ≤3 слов).
+      MATCH_SUBSTR (2) — то же, но Flow съел первое слово маркера (сдвиг k).
+      MATCH_FUZZY  (3) — bag-of-words: пересечение filename ↔ полное тело
+        промпта сцены. Принимаем, если ≥3 слов совпало (или ≥2 при ratio
+        ≥0.5 и совпадении хотя бы одного слова с первой фразой-маркером).
+        Score умножает совпадения с marker_words×100 + bag_overlap, чтобы
+        приоритезировать сцены, где filename матчит именно первую фразу.
+    """
     mwords = sc.marker_words
 
     # Уровень 1: filename — префикс маркера (≥3 слов, или ≥2 если filename короткий)
     pref = _common_prefix_len(fwords, mwords)
     if pref >= 3 or (pref >= 2 and len(fwords) <= 3):
-        return (MATCH_STRICT, pref)
+        return (MATCH_STRICT, pref * 100)
 
     # Уровень 2: filename — префикс marker[k:] для какого-то k (Flow съел первое слово)
     for k in range(1, len(mwords)):
         sub = _common_prefix_len(fwords, mwords[k:])
         if sub >= 3 or (sub >= 2 and len(fwords) <= 3):
-            return (MATCH_SUBSTR, sub)
+            return (MATCH_SUBSTR, sub * 100)
 
-    # Уровень 3: bag of words — пересечение множеств
-    if allow_fuzzy:
-        fset = set(fwords)
-        mset = set(mwords)
-        overlap = len(fset & mset)
-        # Нужно: (а) совпало ≥2 слов, (б) почти все слова filename присутствуют в маркере
-        if overlap >= 2 and overlap >= len(fwords) - 1:
-            return (MATCH_FUZZY, overlap)
+    # Уровень 3: bag-of-words против ПОЛНОГО тела промпта.
+    # Главный сигнал — bag_overlap; marker_overlap (с первыми 5 словами
+    # subject-маркера) идёт только как тай-брейк, потому что Flow в новых
+    # именах файлов часто игнорирует первую фразу и выбирает ключевые
+    # слова из любого места промпта.
+    if allow_fuzzy and fwords:
+        bag_overlap = _fuzzy_overlap(fwords, sc.prompt_bag)
+        marker_overlap = _fuzzy_overlap(fwords, set(mwords[:5]))
+        ratio = bag_overlap / max(1, len(fwords))
+
+        # Принимаем, если ≥3 слов filename есть в теле промпта (с учётом
+        # стеммирования) И покрытие ≥50%. Это режет ложные срабатывания
+        # на общих словах вроде «cronus», «throne», «cat».
+        if bag_overlap >= 3 and ratio >= 0.5:
+            # Score: bag_overlap×10 главный, marker_overlap — тай-брейк.
+            score = bag_overlap * 10 + marker_overlap
+            return (MATCH_FUZZY, score)
 
     return None
+
+
+def _fuzzy_overlap(fwords: tuple[str, ...] | list[str], bag) -> int:
+    """Считает совпадения filename-токенов с bag с учётом стеммирования.
+
+    Два токена считаются совпавшими, если они равны ИЛИ имеют общий
+    префикс ≥5 символов И оба длиной ≥5 (это ловит striking↔strike,
+    strikes↔strike, throned↔throne, absorbing↔absorbed). Порог 5 защищает
+    от ложных срабатываний вроде starry↔starlight (общий префикс star=4).
+    """
+    matched = 0
+    for f in fwords:
+        for b in bag:
+            if _token_matches(f, b):
+                matched += 1
+                break
+    return matched
+
+
+def _token_matches(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    if len(a) >= 5 and len(b) >= 5:
+        return _common_str_prefix_len(a, b) >= 5
+    return False
+
+
+def _common_str_prefix_len(a: str, b: str) -> int:
+    n = 0
+    for x, y in zip(a, b):
+        if x == y:
+            n += 1
+        else:
+            break
+    return n
 
 
 def _common_prefix_len(a: tuple[str, ...], b: tuple[str, ...]) -> int:

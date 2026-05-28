@@ -10,7 +10,10 @@ const state = {
   // Hub
   summaries: [],
   hubSelectedName: null,
-  hubFilter: 'all',
+  // 'active' (не опубликовано) | 'archive' (только опубликовано) | 'all'
+  // По умолчанию архив скрыт: опубликованные мифы не нужны в общем пуле,
+  // но всегда доступны через сегмент «архив».
+  hubFilter: 'active',
   hubSceneCache: {},   // key: `${mode}::${scenario}`
   hubSearchTerm: '',
   // Публикация (общий флаг per-scenario, разделяемый между режимами).
@@ -70,6 +73,15 @@ function api() {
       runnerStatus: (name) => `/api/videos/${encodeURIComponent(name)}/runner-status`,
     };
   }
+  if (state.mode === 'montage') {
+    // У монтажа из API сейчас только список мифов (с прогрессом 4 шагов
+    // pipeline'а). Остальные ручки появятся вместе с реальной интеграцией
+    // build_<myth>.py / enrich_<myth>.py — пока на их месте no-op-toast,
+    // см. renderHubDetail-ветку для montage.
+    return {
+      myths: '/api/montage/myths',
+    };
+  }
   return {
     myths: '/api/scenarios-summary',
     scenes:  (name) => `/api/scenes/${encodeURIComponent(name)}`,
@@ -85,6 +97,7 @@ function api() {
 function modeLabel() {
   if (state.mode === 'image') return 'Ревью изображений';
   if (state.mode === 'video') return 'Ревью видео';
+  if (state.mode === 'montage') return 'Монтаж';
   return 'Ревью озвучки';
 }
 
@@ -189,6 +202,9 @@ function parseHash() {
       sceneBase: parts[3] || null,
     };
   }
+  if (view === 'conveyor') {
+    return { view: 'conveyor', scenario: parts[1] || null };
+  }
   return null;
 }
 
@@ -204,15 +220,35 @@ async function applyHash() {
       return true;
     }
     if (route.view === 'hub') {
-      setMode(['image', 'video'].includes(route.mode) ? route.mode : 'voice');
+      setMode(['image', 'video', 'montage'].includes(route.mode) ? route.mode : 'voice');
       setView('hub');
       await loadHub();
       return true;
     }
     if (route.view === 'review' && route.scenario) {
+      // У монтажа нет review-страницы (pipeline ещё в разработке) — любой
+      // #review/montage/* хэш редиректим в его hub. Иначе loadScenario
+      // упадёт на отсутствующем /api/montage/.../scenes.
+      if (route.mode === 'montage') {
+        setMode('montage');
+        setView('hub');
+        await loadHub();
+        return true;
+      }
       setMode(['image', 'video'].includes(route.mode) ? route.mode : 'voice');
       await loadScenario(route.scenario, route.sceneBase);
       setView('review');
+      return true;
+    }
+    if (route.view === 'conveyor' && route.scenario) {
+      // Конвейер монтажа всегда живёт в режиме montage. Если summaries
+      // ещё не загружены (прямой заход по URL без хаба) — подтягиваем
+      // их, чтобы renderConveyor смог взять display_name/статистику.
+      setMode('montage');
+      if (!state.summaries.length) {
+        try { state.summaries = await fetchJSON(api().myths); } catch (_) {}
+      }
+      await openConveyor(route.scenario, { push: false });
       return true;
     }
   } catch (e) {
@@ -226,12 +262,13 @@ async function applyHash() {
 
 function setView(view) {
   document.body.dataset.view = view;
-  if (view === 'hub' || view === 'chooser') {
+  if (view === 'hub' || view === 'chooser' || view === 'conveyor') {
     stopAudio();
     if (typeof stopAllVideo === 'function') stopAllVideo();
     stopCosyProgress();
   }
-  // Пишем минимальный hash для chooser/hub; review пишет свой в loadScenario
+  // Пишем минимальный hash для chooser/hub; review/conveyor пишут свои
+  // hash отдельно (loadScenario / openConveyor — там известно имя сценария).
   if (view === 'chooser') writeHash(['chooser']);
   else if (view === 'hub') writeHash(['hub', state.mode || 'voice']);
 }
@@ -283,7 +320,212 @@ async function loadChooserMeta() {
   fillChooserMeta('chooser-voice-meta', voiceSum);
   fillChooserMeta('chooser-image-meta', imageSum);
   fillChooserMeta('chooser-video-meta', videoSum);
+  // Параллельно подтягиваем статус CosyVoice-сервера. Не блокирующее:
+  // если сервер недоступен — просто покажем кнопку «Запустить».
+  refreshCosyServerStatus().catch(() => {});
 }
+
+// ── CosyVoice-сервер: статус-индикатор + кнопка запуска ────────────────────
+//
+// Сервер живёт отдельно (см. automation/cosyvoice_server.py), грузит модель
+// один раз и обслуживает webapp по HTTP на 5001. Webapp поллит /health,
+// чтобы показать пользователю состояние: офлайн / прогрев модели / готов.
+//
+// Состояния панели (data-state):
+//   unknown — ещё не опросили (короткий миг при загрузке)
+//   loading — идёт запрос /health
+//   offline — сервер не отвечает (можно нажать «Запустить»)
+//   warming — сервер живой, модель ещё грузится (~30 сек)
+//   ready   — модель в памяти, можно жать «Озвучить»
+//   error   — модель грузилась и упала (показываем причину)
+
+let _cosyServerPollTimer = null;
+let _cosyServerStartInFlight = false;
+
+async function refreshCosyServerStatus() {
+  const panel = document.getElementById('cosy-server-panel');
+  if (!panel) return;
+  const btn = document.getElementById('cosy-server-btn');
+  const stopBtn = document.getElementById('cosy-server-stop-btn');
+  const logBtn = document.getElementById('cosy-server-log-btn');
+
+  let data;
+  try {
+    data = await fetchJSON('/api/cosyvoice-server/health');
+  } catch (e) {
+    setCosyState('error', `webapp не смог опросить /health: ${e.message}`);
+    return;
+  }
+
+  // Управление видимостью кнопок: «Запустить» когда offline/error,
+  // «стоп» и «логи» когда warming/ready (сервер живой).
+  const isAlive = data.reachable && !data.model_error;
+  if (btn) btn.hidden = isAlive;
+  if (stopBtn) stopBtn.hidden = !isAlive;
+  if (logBtn) logBtn.hidden = false; // лог всегда доступен — для разбора падений тоже
+
+  if (!data.reachable) {
+    setCosyState('offline', 'не запущен — нажми «Запустить»');
+    return;
+  }
+  if (data.model_error) {
+    setCosyState('error', `модель упала: ${data.model_error}`);
+    if (btn) {
+      btn.hidden = false;
+      btn.textContent = 'Перезапустить';
+    }
+    return;
+  }
+  if (!data.model_loaded) {
+    const uptime = Math.round(data.uptime_sec || 0);
+    setCosyState('warming', `модель грузится… (${uptime}s)`);
+    scheduleCosyPoll(2000);
+    return;
+  }
+  // ready
+  const queue = data.queue_len || 0;
+  const queueText = queue > 0 ? ` · в очереди: ${queue}` : '';
+  setCosyState('ready', `готов · аптайм ${Math.round(data.uptime_sec || 0)}s${queueText}`);
+  // Когда сервер уже готов — опрашиваем реже (раз в 10 сек), чтобы
+  // обновлять uptime/queue, но не насиловать сеть.
+  scheduleCosyPoll(10000);
+}
+
+function setCosyState(state, subText) {
+  const panel = document.getElementById('cosy-server-panel');
+  const sub = document.getElementById('cosy-server-sub');
+  if (panel) panel.dataset.state = state;
+  if (sub) sub.textContent = subText;
+}
+
+function scheduleCosyPoll(ms) {
+  if (_cosyServerPollTimer) clearTimeout(_cosyServerPollTimer);
+  // Поллим только если chooser-страница ещё видна. На других экранах
+  // индикатор скрыт, опрос не нужен.
+  _cosyServerPollTimer = setTimeout(() => {
+    if (document.body.dataset.view !== 'chooser') {
+      _cosyServerPollTimer = null;
+      return;
+    }
+    refreshCosyServerStatus().catch(() => {});
+  }, ms);
+}
+
+async function onCosyServerStart() {
+  if (_cosyServerStartInFlight) return;
+  const btn = document.getElementById('cosy-server-btn');
+  _cosyServerStartInFlight = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Запускаю…';
+  }
+  setCosyState('loading', 'открываю окно cmd…');
+  try {
+    const res = await fetch('/api/cosyvoice-server/start', { method: 'POST' });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    const data = await res.json();
+    if (data.already_running) {
+      toast('CosyVoice-сервер уже работает', 'info');
+    } else {
+      toast('Окно cmd открыто, модель грузится ~30 сек', 'info');
+    }
+    setCosyState('warming', 'модель грузится… (0s)');
+    // Начинаем активный поллинг прогрева
+    scheduleCosyPoll(2000);
+  } catch (e) {
+    setCosyState('error', `не удалось запустить: ${e.message}`);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Повторить';
+      btn.hidden = false;
+    }
+  } finally {
+    _cosyServerStartInFlight = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function onCosyServerStop() {
+  if (!confirm('Остановить CosyVoice-сервер? Модель выгрузится из памяти.')) return;
+  const stopBtn = document.getElementById('cosy-server-stop-btn');
+  if (stopBtn) stopBtn.disabled = true;
+  setCosyState('loading', 'останавливаю…');
+  try {
+    const res = await fetch('/api/cosyvoice-server/stop', { method: 'POST' });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    const data = await res.json();
+    toast(
+      data.was_running ? `Сервер остановлен (PID ${data.pid})` : (data.message || 'Сервер уже не работал'),
+      'info'
+    );
+  } catch (e) {
+    toast(`Не удалось остановить: ${e.message}`, 'error');
+  } finally {
+    if (stopBtn) stopBtn.disabled = false;
+    // Сразу опрашиваем — индикатор покажет offline, кнопки переключатся.
+    refreshCosyServerStatus().catch(() => {});
+  }
+}
+
+async function onCosyServerShowLog() {
+  let data;
+  try {
+    data = await fetchJSON('/api/cosyvoice-server/log?lines=200');
+  } catch (e) {
+    toast(`Не смог прочитать лог: ${e.message}`, 'error');
+    return;
+  }
+  showCosyLogModal(data);
+}
+
+function showCosyLogModal(data) {
+  let modal = document.getElementById('cosy-log-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'cosy-log-modal';
+    modal.className = 'cosy-log-modal';
+    modal.innerHTML = `
+      <div class="cosy-log-modal-dialog">
+        <div class="cosy-log-modal-head">
+          <h3 id="cosy-log-title">Лог CosyVoice-сервера</h3>
+          <button id="cosy-log-close">Закрыть (Esc)</button>
+        </div>
+        <pre class="cosy-log-modal-body" id="cosy-log-body"></pre>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) modal.dataset.open = '0';
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') modal.dataset.open = '0';
+    });
+    document.getElementById('cosy-log-close')
+      .addEventListener('click', () => { modal.dataset.open = '0'; });
+  }
+  const title = document.getElementById('cosy-log-title');
+  const body = document.getElementById('cosy-log-body');
+  if (!data.exists) {
+    title.textContent = 'Лог CosyVoice-сервера (файл не найден)';
+    body.textContent = 'Лог-файл automation/_cosyvoice_server.log ещё не создан.\nЗапусти сервер хотя бы раз.';
+  } else {
+    const sizeKb = (data.size_bytes / 1024).toFixed(1);
+    title.textContent = `Лог CosyVoice-сервера — ${data.path} (${sizeKb} KB)`;
+    body.textContent = data.tail || '(пусто)';
+    // Скроллим в конец — туда, где свежие строки.
+    setTimeout(() => { body.scrollTop = body.scrollHeight; }, 0);
+  }
+  modal.dataset.open = '1';
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const startBtn = document.getElementById('cosy-server-btn');
+  if (startBtn) startBtn.addEventListener('click', onCosyServerStart);
+  const stopBtn = document.getElementById('cosy-server-stop-btn');
+  if (stopBtn) stopBtn.addEventListener('click', onCosyServerStop);
+  const logBtn = document.getElementById('cosy-server-log-btn');
+  if (logBtn) logBtn.addEventListener('click', onCosyServerShowLog);
+});
 
 function fillChooserMeta(elId, settled) {
   const el = $(elId);
@@ -321,12 +563,12 @@ document.addEventListener('click', (e) => {
 });
 
 function setupHubBindings() {
-  // Фильтры
-  document.querySelectorAll('.hub-chip').forEach(chip => {
-    chip.addEventListener('click', () => {
-      document.querySelectorAll('.hub-chip').forEach(c => c.classList.remove('active'));
-      chip.classList.add('active');
-      state.hubFilter = chip.dataset.filter;
+  // Сегменты «в работе / архив / все». renderHubList сам подсветит
+  // активный и обновит data-hub-mode на панели — здесь только маршрутизация.
+  document.querySelectorAll('.hub-seg').forEach(seg => {
+    seg.addEventListener('click', () => {
+      if (state.hubFilter === seg.dataset.filter) return;
+      state.hubFilter = seg.dataset.filter;
       renderHubList();
     });
   });
@@ -611,8 +853,12 @@ async function loadHub() {
   }
 
   if (!state.summaries.length) {
-    $('hub-list-items').innerHTML =
-      `<div class="hub-list-empty">нет мифов ${state.mode === 'image' ? 'с картинками' : 'с озвучкой'}</div>`;
+    const emptyLabel = {
+      image: 'нет мифов с картинками',
+      video: 'нет мифов с видео',
+      montage: 'нет мифов, готовых к монтажу',
+    }[state.mode] || 'нет мифов с озвучкой';
+    $('hub-list-items').innerHTML = `<div class="hub-list-empty">${emptyLabel}</div>`;
     $('hub-detail').innerHTML = '<div class="hub-empty">Нет данных</div>';
     return;
   }
@@ -647,19 +893,24 @@ function markHubFresh() {
   }));
 }
 
+// Что считать архивом. Раньше критерий был `published`, потом я переключил
+// на `is_archived` (физическая локация content/архив/<миф>). Но между
+// деплоем функционала и запуском миграции «опубликованные, но не
+// перенесённые» мифы остаются на старых местах и попадают в «в работе»,
+// что ломает ожидания пользователя. Сейчас критерий — ИЛИ-объединение:
+// архивный = либо физически в content/архив/, либо помечен published.
+// После миграции оба условия сходятся, отдельная семантика «архивно, но
+// без флага» сохраняется (снятие публикации не возвращает миф в общий пул).
+function isArchivedSummary(s) {
+  return !!(s.is_archived || s.published);
+}
+
 function filterSummaries() {
   return state.summaries.filter(s => {
-    if (state.hubFilter === 'published') {
-      if (!s.published) return false;
-    } else if (state.hubFilter === 'all') {
-      // показываем всё, включая опубликованные
-    } else {
-      // status-фильтры (в работе / готовы / новые) — это «активная воронка
-      // работы». Опубликованный миф = терминальное состояние, исключаем его
-      // из этих вкладок, чтобы он не «висел» в работе после публикации.
-      if (s.published) return false;
-      if (s.status !== state.hubFilter) return false;
-    }
+    const archived = isArchivedSummary(s);
+    if (state.hubFilter === 'archive' && !archived) return false;
+    if (state.hubFilter === 'active' && archived) return false;
+    // 'all' — без фильтра по локации
     if (state.hubSearchTerm &&
         !s.display_name.toLowerCase().includes(state.hubSearchTerm)) return false;
     return true;
@@ -677,6 +928,17 @@ function statusLabel(status) {
 
 function statusSub(summary) {
   const { status, scene_count, done, published, published_at } = summary;
+  // В режиме монтажа критерий «готовности» — этап pipeline, а не доля
+  // ревью. Подменяем подпись на «шаг N из 4», чтобы пользователю было
+  // сразу понятно, что миф уже на конвейере.
+  if (state.mode === 'montage') {
+    const step = summary.montage_step ?? 0;
+    const total = summary.montage_total_steps ?? 4;
+    if (status === 'wip') return 'материалы ещё готовятся';
+    if (step >= total) return `${scene_count} ${plural(scene_count, 'сцена', 'сцены', 'сцен')} · мастер готов`;
+    if (step === 0) return `${scene_count} ${plural(scene_count, 'сцена', 'сцены', 'сцен')} · готов к сборке`;
+    return `шаг ${step} из ${total} · ${scene_count} ${plural(scene_count, 'сцена', 'сцены', 'сцен')}`;
+  }
   if (published) {
     const dateStr = formatPublishedDate(published_at);
     return `${scene_count} ${plural(scene_count, 'сцена', 'сцены', 'сцен')} · опубликован${dateStr ? ' ' + dateStr : ''}`;
@@ -695,6 +957,25 @@ function formatPublishedDate(iso) {
   return `${d.getDate()} ${months[d.getMonth()]}`;
 }
 
+// Часть сериала — имя содержит слэш И не относится к `архив/`.
+// Используется для disabled-состояния кнопки publish: discovery работает
+// на 2 уровнях, архив серии = 3 уровня, поддержки пока нет.
+function isSeries(name) {
+  if (!name || !name.includes('/')) return false;
+  return !name.startsWith('архив/');
+}
+
+// Формат для архивной карточки: крупная пара день·месяц + год маленьким.
+// Без иностранных букв и без сокращений — пусть типографика говорит сама.
+function formatArchiveDate(iso) {
+  if (!iso) return '<span class="ad-day">—</span>';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '<span class="ad-day">—</span>';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `<span class="ad-day">${dd}·${mm}</span>${d.getFullYear()}`;
+}
+
 function toRoman(num) {
   const map = [['M',1000],['CM',900],['D',500],['CD',400],['C',100],['XC',90],
                ['L',50],['XL',40],['X',10],['IX',9],['V',5],['IV',4],['I',1]];
@@ -707,21 +988,59 @@ function renderHubList() {
   const container = $('hub-list-items');
   const filtered = filterSummaries();
 
+  // Синхронизируем сегменты: подсветка активного, счётчики по каждому режиму
+  // (считаем от полного набора, без учёта search-фильтра — счётчики должны
+  // отражать «сколько вообще есть», иначе будут прыгать при наборе текста).
+  document.querySelectorAll('.hub-seg').forEach(seg => {
+    seg.classList.toggle('active', seg.dataset.filter === state.hubFilter);
+  });
+  const counts = {
+    active: state.summaries.filter(s => !isArchivedSummary(s)).length,
+    archive: state.summaries.filter(s => isArchivedSummary(s)).length,
+    all: state.summaries.length,
+  };
+  document.querySelectorAll('.hub-seg-n').forEach(el => {
+    const k = el.dataset.count;
+    if (k in counts) el.textContent = counts[k];
+  });
+
+  // «Настроение» панели: в режиме архива — тёплое золото, иначе нейтрально.
+  // Атрибут читается из CSS — карточки и заливки переключаются автоматически.
+  const panel = document.querySelector('.hub-list-panel');
+  if (panel) panel.setAttribute('data-hub-mode', state.hubFilter);
+
   if (!filtered.length) {
     container.innerHTML = '<div class="hub-list-empty">ничего не найдено</div>';
     return;
   }
 
+  const isArchive = state.hubFilter === 'archive';
+
   container.innerHTML = filtered.map((s) => {
     const globalIdx = state.summaries.findIndex(x => x.name === s.name);
     const active = s.name === state.hubSelectedName ? 'active' : '';
     const pubCls = s.published ? 'is-published' : '';
-    const pct = s.scene_count ? (s.done / s.scene_count) * 100 : 0;
+    // В режиме монтажа прогресс — это шаги pipeline (0–4), а не доля
+    // отревьюенных сцен. Иначе in_progress-карточка с уже аппрувнутыми
+    // voice/video показывала бы 100% бар, что вводит в заблуждение.
+    const pct = state.mode === 'montage'
+      ? ((s.montage_step || 0) / (s.montage_total_steps || 4)) * 100
+      : (s.scene_count ? (s.done / s.scene_count) * 100 : 0);
 
-    // Опубликованный миф всегда показываем как «опуб.» (даже если статус
-    // ready/in_progress) — это перекрывающий маркер и в UI, и в фильтре.
+    // В архиве — крупная дата справа вместо чипа. Дата = published_at, если
+    // флаг публикации стоит; иначе короткая подпись «в архиве» (миф мог быть
+    // вручную снят с публикации, но остался в content/архив/).
+    // В режимах «в работе» / «все» опубликованный миф по-прежнему показывает
+    // оранжевый чип «опуб.».
+    const archived = isArchivedSummary(s);
     let rightCol;
-    if (s.published) {
+    let extraCls = '';
+    if (isArchive && archived) {
+      rightCol = s.published
+        ? `<div class="archive-date">${formatArchiveDate(s.published_at)}</div>`
+        : `<div class="hub-item-status new">в архиве</div>`;
+      extraCls = 'archive-card';
+    } else if (s.published) {
       rightCol = `<div class="hub-item-status published">опуб.</div>`;
     } else if (s.status === 'in_progress') {
       rightCol = `<div class="hub-item-bar"><div class="hub-item-bar-fill" style="width:${pct}%"></div></div>`;
@@ -730,7 +1049,7 @@ function renderHubList() {
     }
 
     return `
-      <div class="hub-item status-${s.status} ${pubCls} ${active}" data-name="${escapeAttr(s.name)}">
+      <div class="hub-item status-${s.status} ${pubCls} ${extraCls} ${active}" data-name="${escapeAttr(s.name)}">
         <div class="hub-item-num">${toRoman(globalIdx + 1)}</div>
         <div class="hub-item-body">
           <div class="hub-item-name">${escapeHtml(s.display_name)}</div>
@@ -754,6 +1073,13 @@ function renderHubList() {
       renderHubDetail();
     });
     el.addEventListener('dblclick', () => {
+      // В режиме монтажа dblclick открывает конвейер мифа (4-ступенчатый
+      // pipeline). Сами шаги пока заглушки — реальные ручки build/enrich/
+      // stickers/bounce подключим позже.
+      if (state.mode === 'montage') {
+        openConveyor(el.dataset.name);
+        return;
+      }
       openScenarioReview(el.dataset.name);
     });
   });
@@ -765,6 +1091,16 @@ async function renderHubDetail() {
 
   if (!summary) {
     container.innerHTML = '<div class="hub-empty">Выберите миф слева</div>';
+    return;
+  }
+
+  // ── Режим 04 · Монтаж — отдельная панель с 4-ступенчатым pipeline ────
+  // Pipeline-инструменты (build_<myth>.py, enrich_<myth>.py, добавление
+  // стикеров, bounce-анимация) ещё не интегрированы с webapp. Кнопка
+  // «Открыть монтаж» пока показывает toast, что конвейер в разработке —
+  // двойной клик по карточке мифа ведёт сюда же.
+  if (state.mode === 'montage') {
+    renderMontageHubDetail(container, summary);
     return;
   }
 
@@ -865,7 +1201,11 @@ async function renderHubDetail() {
 
     <div class="hub-dp-cta">
       <div class="hub-dp-cta-text">${ctaText}</div>
-      <button class="hub-btn hub-btn-publish ${summary.published ? 'is-on' : ''}" id="hub-publish-btn" title="Пометить миф опубликованным (только визуально, ничего не блокируется)">
+      <button class="hub-btn hub-btn-publish ${summary.published ? 'is-on' : ''}"
+              id="hub-publish-btn"
+              title="${isSeries(summary.name)
+                ? 'Пометить часть сериала опубликованной (без переноса в архив)'
+                : 'Пометить миф опубликованным — папка переедет в content/архив/'}">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12l5 5L20 7"/></svg>
         ${summary.published ? 'опубликован' : 'опубликован?'}
       </button>
@@ -891,6 +1231,1588 @@ async function renderHubDetail() {
   }
 }
 
+// ── Режим 04 · Монтаж: детальная панель с 4-ступенчатым pipeline ──────────
+//
+// Бэкенд (/api/montage/myths) уже считает montage_step (0–4). Здесь
+// рисуем визуализацию: трубу из 4 модулей-карточек, статистику входа
+// (аппрув voice/video), прогресс-бар, CTA «Открыть монтаж».
+//
+// Pipeline-инструменты пока не подключены — кнопка CTA и dblclick по
+// карточке мифа показывают toast. Когда build/enrich/stickers/bounce
+// получат API-ручки, заменим toast на навигацию в conveyor-страницу.
+
+const MONTAGE_STEPS = [
+  {
+    key: 'skeleton',
+    title: 'Скелет',
+    tag: 'build',
+    desc: 'Импорт аппрув-аудио, аппрув-видео и музыки. Видео тянется под голос (стретч до границы кадра 60fps). Интро-капс + karaoke-разметка.',
+  },
+  {
+    key: 'transitions',
+    title: 'Переходы и звуки',
+    tag: 'enrich',
+    desc: 'CapCut-переходы между сценами (whoosh / paper / zoom) с правильной громкостью SFX. План тянется из эталона Мидаса.',
+  },
+  {
+    key: 'stickers',
+    title: 'Стикеры и звуки',
+    tag: 'stickers',
+    desc: 'Эталонные стикеры (по 2 идеи A/B на сцену) на свою сцену + SFX из канона Каллисто.',
+  },
+  {
+    key: 'bounce',
+    title: 'Анимация стикеров',
+    tag: 'bounce',
+    desc: 'Растягиваем каждый стикер на сцену и добавляем циклическую качку y ±0.07 каждые 300 мс.',
+  },
+];
+
+function renderMontageHubDetail(container, summary) {
+  const globalIdx = state.summaries.findIndex(x => x.name === summary.name);
+  const roman = toRoman(globalIdx + 1);
+  const stepDone = Math.max(0, Math.min(4, summary.montage_step || 0));
+  const totalSteps = summary.montage_total_steps || 4;
+  // Активный шаг — следующий после последнего done. Если все 4 готовы,
+  // активного нет (pipeline завершён).
+  const stepActive = stepDone < totalSteps ? stepDone + 1 : null;
+  const pct = Math.round((stepDone / totalSteps) * 100);
+
+  // CTA-текст и кнопка зависят от состояния:
+  //   step 0 + status=wip — материалы ещё не аппрувлены
+  //   step 0 + status=ready — можно собирать скелет
+  //   step 1–3 — продолжить следующим шагом
+  //   step 4 — мастер готов, можно пересобрать
+  let ctaText, ctaBtnLabel;
+  if (summary.status === 'wip') {
+    ctaText = `<b>Материалы ещё не аппрувлены.</b> Закройте сначала ревью озвучки и видео — без этого pipeline нечем кормить.`;
+    ctaBtnLabel = 'Открыть монтаж';
+  } else if (stepDone === 0) {
+    ctaText = `<b>Готово к старту.</b> Аудио и видео аппрувлены, можно собирать скелет (шаг 1 из ${totalSteps}).`;
+    ctaBtnLabel = 'Начать монтаж';
+  } else if (stepDone < totalSteps) {
+    ctaText = `<b>Шаг ${stepDone} из ${totalSteps} готов.</b> Дальше — ${MONTAGE_STEPS[stepDone].title.toLowerCase()}.`;
+    ctaBtnLabel = `Перейти к шагу ${stepDone + 1}`;
+  } else {
+    ctaText = `<b>Мастер готов.</b> Все 4 шага pipeline'а пройдены, видео лежит в content/final/.`;
+    ctaBtnLabel = 'Открыть конвейер';
+  }
+
+  // Прогрессивная градиент-линия между ступенями — заполнена до stepDone.
+  // Считаем в процентах ширины: от первой ступени к четвёртой, шаг = 33.3%.
+  const fillPct = stepDone === 0 ? 0 : (stepDone - 1) * (100 / (totalSteps - 1)) +
+                                       (stepActive !== null ? 12 : 0);
+
+  const stepsHtml = MONTAGE_STEPS.map((step, idx) => {
+    const stepNum = idx + 1;
+    let stateCls = 'locked';
+    if (stepNum <= stepDone) stateCls = 'done';
+    else if (stepNum === stepActive) stateCls = 'active';
+    return `
+      <div class="mh-step ${stateCls}">
+        <div class="mh-step-ring">${stateCls === 'done' ? '✓' : stepNum}</div>
+        <div class="mh-step-name">${escapeHtml(step.title)}</div>
+        <div class="mh-step-tag">${escapeHtml(step.tag)}</div>
+        <div class="mh-step-desc">${escapeHtml(step.desc)}</div>
+      </div>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="hub-dp-eyebrow">
+      <span>Миф · ${roman}</span>
+      <span class="dossier-id">${escapeHtml(summary.name)}</span>
+    </div>
+
+    <h1 class="hub-dp-title">${escapeHtml(summary.display_name)}.</h1>
+    <p class="hub-dp-subtitle">
+      Конвейер собирает CapCut-проект из ревью-аппрува: скелет → переходы →
+      стикеры → анимация. На каждом шаге можно остановиться и подправить
+      вручную.
+    </p>
+
+    <div class="hub-dp-stats">
+      <div class="hub-dp-stat good">
+        <div class="hub-dp-stat-label">видео аппрув</div>
+        <div class="hub-dp-stat-value">${summary.done}<span class="unit">/${summary.scene_count}</span></div>
+      </div>
+      <div class="hub-dp-stat">
+        <div class="hub-dp-stat-label">шотов всего</div>
+        <div class="hub-dp-stat-value">${summary.approved_count}</div>
+      </div>
+      <div class="hub-dp-stat accent">
+        <div class="hub-dp-stat-label">длина мастера</div>
+        <div class="hub-dp-stat-value" style="font-size:1.3rem"><span style="font-size:0.9em">${formatDuration(summary.scene_count * 2.5)}</span></div>
+      </div>
+      <div class="hub-dp-stat ${summary.regen ? 'warn' : ''}">
+        <div class="hub-dp-stat-label">шаг pipeline</div>
+        <div class="hub-dp-stat-value">${stepDone}<span class="unit">/${totalSteps}</span></div>
+      </div>
+    </div>
+
+    <div class="hub-dp-progress">
+      <div class="hub-dp-progress-head">
+        <div class="hub-dp-progress-label">прогресс pipeline</div>
+        <div class="hub-dp-progress-pct">${pct}%</div>
+      </div>
+      <div class="hub-dp-bar">
+        <div class="hub-dp-bar-fill ${stepDone >= totalSteps ? 'good' : ''}" style="width:${pct}%"></div>
+      </div>
+    </div>
+
+    <div class="hub-dp-scenes-head">
+      <div class="hub-dp-scenes-title">4 ступени конвейера</div>
+      <div class="hub-dp-legend">
+        <span><span class="dot done"></span>готов</span>
+        <span><span class="dot mint"></span>сейчас</span>
+        <span><span class="dot pending"></span>ждёт</span>
+      </div>
+    </div>
+
+    <div class="mh-steps" style="--mh-fill:${fillPct}%">
+      ${stepsHtml}
+    </div>
+
+    <div class="hub-dp-cta">
+      <div class="hub-dp-cta-text">${ctaText}</div>
+      <button class="hub-btn hub-btn-primary" id="hub-open-btn">
+        ${ctaBtnLabel}
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+      </button>
+    </div>
+  `;
+
+  const openBtn = $('hub-open-btn');
+  if (openBtn) {
+    // Открываем конвейер даже когда status='wip'. Сама страница уже
+    // существует (с заглушечными CTA внутри ступеней) — пользователь
+    // может посмотреть pipeline, даже если входы ещё не аппрувлены.
+    openBtn.addEventListener('click', () => openConveyor(summary.name));
+  }
+}
+
+// ── Конвейер монтажа: открытие страницы pipeline по выбранному мифу ──────
+//
+// Самодостаточная страница (см. .conveyor-container и .cv-* в style.css).
+// Кнопки внутри шагов пока заглушки (toast'ы) — реальные API-ручки
+// build/enrich/stickers/bounce подключим позже. Здесь только маршрутизация
+// и рендер визуального состояния шагов по `montage_step` из summary.
+
+async function openConveyor(scenario, { push = true } = {}) {
+  if (push) pushHash(['conveyor', scenario]);
+  else writeHash(['conveyor', scenario]);
+  setMode('montage');
+  setView('conveyor');
+  // Если summaries ещё не подъехали (прямой заход по URL без хаба) —
+  // дотягиваем их сейчас, чтобы renderConveyor не упёрся в «миф не найден».
+  if (!state.summaries.length) {
+    try { state.summaries = await fetchJSON('/api/montage/myths'); }
+    catch (_) {}
+  }
+  try {
+    renderConveyor(scenario);
+  } catch (err) {
+    console.error('renderConveyor failed:', err);
+    const c = $('conveyor-container');
+    if (c) c.innerHTML = `
+      <div style="padding:48px;color:#f55b5b;font-family:monospace;font-size:0.9rem">
+        <div style="margin-bottom:12px;color:#dddad5;font-size:1.1rem">Ошибка рендера конвейера</div>
+        <pre style="white-space:pre-wrap">${escapeHtml(err && err.stack || String(err))}</pre>
+      </div>
+    `;
+  }
+}
+
+function renderConveyor(scenario) {
+  const container = $('conveyor-container');
+  if (!container) return;
+  const summary = (state.summaries || []).find(s => s.name === scenario);
+  if (!summary) {
+    container.innerHTML = `
+      <div class="cv-shell">
+        <div class="cv-topbar">
+          <div class="cv-brand-row">
+            <button class="cv-brand" id="cv-brand-back">КИСЫ ОЛИМПА</button>
+            <div class="cv-crumb">
+              <button id="cv-crumb-hub">Монтаж</button>
+              <span class="sep">/</span>
+              <b>${escapeHtml(scenario)}</b>
+            </div>
+          </div>
+          <div class="cv-topcenter">миф <em>не найден</em> в списке монтажа</div>
+          <div></div>
+        </div>
+        <div class="cv-body">
+          <main class="cv-pipeline">
+            <div class="cv-pipe-inner">
+              <p style="color:var(--text-dim);font-family:var(--font-mono);font-size:0.8rem">
+                Сценарий «${escapeHtml(scenario)}» не найден в списке монтажа.
+              </p>
+            </div>
+          </main>
+        </div>
+      </div>
+    `;
+    wireConveyorBackHandlers();
+    return;
+  }
+
+  const totalSteps = summary.montage_total_steps || 4;
+  const stepDone = Math.max(0, Math.min(totalSteps, summary.montage_step || 0));
+  const stepActive = stepDone < totalSteps ? stepDone + 1 : null;
+  const pct = Math.round((stepDone / totalSteps) * 100);
+
+  // Master timecode — пока пересчёт из количества сцен (как в renderMontageHubDetail).
+  // Когда build_<myth>.py начнёт класть фактическую длину мастера в JSON,
+  // подменим на реальное значение.
+  const masterDur = formatDuration(summary.scene_count * 2.5);
+  // Стандартное «MM:SS.mmm» — для отображения в плашке MASTER рядом.
+  const masterDisplay = masterDur + '.000';
+
+  // SVG-кольцо прогресса для топбара: длина окружности r=9 → 2πr ≈ 56.5.
+  const ringDash = 56.5;
+  const ringOffset = ringDash * (1 - pct / 100);
+
+  // Градиент трубы между ступенями — заполнен до stepDone.
+  const pipeGradient = buildConveyorPipeGradient(stepDone, totalSteps);
+
+  // «Аппрув. аудио» — sentence-уровень из approved_sentences/, а не
+  // видео-done. Бэкенд отдаёт audio_done; fallback на summary.done
+  // нужен только для старых клиентов/респонсов без поля.
+  const approvedAudio = summary.audio_done ?? summary.done ?? 0;
+  const approvedShots = summary.approved_count ?? summary.done ?? 0;
+
+  container.innerHTML = `
+    <div class="cv-shell">
+
+      <div class="cv-topbar">
+        <div class="cv-brand-row">
+          <button class="cv-brand" id="cv-brand-back" title="К выбору режима">КИСЫ ОЛИМПА</button>
+          <div class="cv-crumb">
+            <button id="cv-crumb-hub">Монтаж</button>
+            <span class="sep">/</span>
+            <b>${escapeHtml(summary.display_name)}</b>
+          </div>
+        </div>
+        <div class="cv-topcenter">сборка <em>CapCut</em>-проекта · конвейер 4 ступени</div>
+        <div class="cv-brand-row" style="gap:14px">
+          <div class="cv-tc-master">
+            <span class="lbl">MASTER</span>
+            <b>${escapeHtml(masterDisplay)}</b>
+          </div>
+          <div class="cv-progress-pill">
+            <div class="cv-progress-ring">
+              <svg width="22" height="22" viewBox="0 0 22 22">
+                <circle class="track" cx="11" cy="11" r="9"/>
+                <circle class="fill" cx="11" cy="11" r="9"
+                        stroke-dasharray="${ringDash}" stroke-dashoffset="${ringOffset.toFixed(2)}"/>
+              </svg>
+            </div>
+            <div class="cv-progress-text"><b>${stepDone}</b> / ${totalSteps} шага</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="cv-body">
+        <main class="cv-pipeline">
+          <div class="cv-pipe-inner">
+
+            <header class="cv-pipe-head">
+              <div class="cv-pipe-head-left">
+                <div class="eyebrow">
+                  <button class="back" id="cv-back-list">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+                    к списку мифов
+                  </button>
+                  <span>сборка / pipeline / capcut</span>
+                </div>
+                <h1>${renderConveyorTitle(summary.display_name)}</h1>
+                <div class="sub">
+                  ${summary.scene_count} ${plural(summary.scene_count, 'сцена', 'сцены', 'сцен')},
+                  ${approvedShots} ${plural(approvedShots, 'аппрув-шот', 'аппрув-шота', 'аппрув-шотов')}.
+                  Конвейер собирает CapCut-проект из ревью-аппрува — на каждом
+                  шаге можно остановиться и подправить вручную.
+                </div>
+              </div>
+              <div class="cv-pipe-stats">
+                <div class="cv-pipe-stat">
+                  <div class="v ${approvedAudio > 0 ? 'green' : ''}">${approvedAudio}</div>
+                  <div class="l">аппрув. аудио</div>
+                </div>
+                <div class="cv-pipe-stat">
+                  <div class="v ${approvedShots > 0 ? 'green' : ''}">${approvedShots}</div>
+                  <div class="l">аппрув. шотов</div>
+                </div>
+                <div class="cv-pipe-stat">
+                  <div class="v mint">${masterDur}</div>
+                  <div class="l">длина</div>
+                </div>
+                <div class="cv-pipe-stat">
+                  <div class="v">${stepDone}<span style="color:var(--text-ghost)">/${totalSteps}</span></div>
+                  <div class="l">шаг pipeline</div>
+                </div>
+              </div>
+            </header>
+
+            <div style="margin: 0 0 22px; display:flex; align-items:center; gap:12px;">
+              <div style="flex:1; height:3px; background: var(--border); border-radius: 2px; overflow:hidden; position:relative;">
+                <div style="position:absolute; inset:0; width:${pct}%; background: linear-gradient(90deg, var(--green), var(--mint)); border-radius: 2px; transition: width 0.4s;"></div>
+              </div>
+              <div style="font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-ghost);">
+                прогресс pipeline · <span style="color: var(--mint)">${pct}%</span>
+              </div>
+            </div>
+
+            <div class="cv-steps" style="--cv-pipe-fill: ${pipeGradient}">
+              ${renderConveyorSteps(summary, stepDone, stepActive, totalSteps)}
+            </div>
+
+          </div>
+        </main>
+      </div>
+    </div>
+  `;
+
+  wireConveyorBackHandlers();
+  wireConveyorStepButtons(summary);
+  loadConveyorTransitions(summary.name);
+}
+
+// Подтягивает реальные переходы из живого CapCut-драфта мифа и заполняет
+// план на шаге 2 (плашка «Переходов выбрано» + сетка стыков). Если драфт
+// ещё не собран (шаг 1 не запускался) — показываем нейтральную заглушку.
+async function loadConveyorTransitions(scenario) {
+  const mount = $('cv-trans-preview');
+  const countEl = $('cv-trans-count');
+  if (!mount) return;
+  let data;
+  try {
+    data = await fetchJSON(`/api/montage/${encodeURIComponent(scenario)}/transitions`);
+  } catch (_) {
+    mount.innerHTML = '<span class="cv-trans-empty">не удалось прочитать драфт</span>';
+    return;
+  }
+  if (!data || !data.ready || !(data.transitions || []).length) {
+    mount.innerHTML = '<span class="cv-trans-empty">скелет не собран — запусти шаг 1</span>';
+    if (countEl) countEl.textContent = '—';
+    return;
+  }
+  const chips = data.transitions.map(t => {
+    const isCut = t.label === 'Cut';
+    const dur = (t.duration != null) ? ` · ${t.duration.toFixed(2)}` : '';
+    return `<span class="cv-trans-chip ${isCut ? '' : 'picked'}"><span class="dot"></span>${t.from}→${t.to} ${escapeHtml(t.label)}${dur}</span>`;
+  });
+  mount.innerHTML = chips.join('');
+  if (countEl) countEl.textContent = `${data.picked}/${data.total}`;
+}
+
+// Линейный градиент для соединительной трубы между ступенями: зелёным
+// заливаем долю готовых шагов, мятным — текущий активный, серым — остаток.
+function buildConveyorPipeGradient(stepDone, totalSteps) {
+  const donePct = (stepDone / totalSteps) * 100;
+  const activeEnd = stepDone < totalSteps ? donePct + (100 / totalSteps) : donePct;
+  return `linear-gradient(180deg,
+    var(--green) 0%,
+    var(--green) ${donePct.toFixed(1)}%,
+    var(--mint) ${donePct.toFixed(1)}%,
+    var(--mint) ${activeEnd.toFixed(1)}%,
+    var(--border) ${activeEnd.toFixed(1)}%,
+    var(--border) 100%)`;
+}
+
+// Имя мифа в h1: «Дионис и Ариадна.» → последнее слово курсивом-мятным
+// (паттерн из мокапа). Без второго слова — просто эскейпим целиком.
+function renderConveyorTitle(displayName) {
+  const safe = escapeHtml(displayName);
+  const parts = displayName.split(' ');
+  if (parts.length < 2) return safe + '.';
+  const last = escapeHtml(parts.pop());
+  const rest = escapeHtml(parts.join(' '));
+  return `${rest} <em>${last}</em>.`;
+}
+
+// 4 ступени конвейера — структура повторяет мокап. Состояние шага:
+//   done   — stepNum <= stepDone
+//   active — stepNum === stepActive
+//   locked — иначе
+// Текущая реализация рисует фиктивные данные валидации/превью — заменим
+// их на реальные, когда подключим API скелета/переходов/стикеров/баунса.
+const CV_STEPS = [
+  {
+    num: 1,
+    title: 'Скелет',
+    tag: 'build',
+    runner: 'build_<myth>.py',
+    desc: 'Импорт аппрув-аудио, аппрув-видео и музыки в CapCut. Видео тянется под голос (стретч до границы кадра 60fps). Сразу прибиты <em>интро-капс субтитры</em> и karaoke-разметка.',
+    eta: '~4 s · 5 дорожек',
+  },
+  {
+    num: 2,
+    title: 'Переходы и <em>звуки</em>',
+    tag: 'enrich',
+    runner: 'enrich_<myth>.py',
+    desc: 'Расставляем CapCut-переходы между сценами (<code>whoosh</code>, <code>paper-bag</code>, <code>swish</code>) с правильной громкостью SFX. План тянется из эталона Мидаса — можно перетыкать прямо здесь до запуска.',
+    eta: '~3.2 s · переходы + SFX',
+  },
+  {
+    num: 3,
+    title: 'Стикеры и звуки',
+    tag: 'stickers',
+    runner: 'add_stickers.py',
+    desc: 'Эталонные стикеры (по 2 идеи A/B на сцену) кладутся на свою сцену как заготовка на всю длину. Каждому стикеру свой SFX из канона Каллисто — <code>Pac=0.39</code>, <code>coin=0.28</code>, <code>ding=1.00</code>.',
+    eta: '26 эталонов · 14 каркасов',
+  },
+  {
+    num: 4,
+    title: 'Анимация стикеров',
+    tag: 'bounce',
+    runner: 'animate_stickers.py',
+    desc: 'Растягиваем каждый стикер на всю сцену и добавляем циклическую качку <code>y ±0.07</code> каждые <code>300 мс</code>. Перед этим даём вам удалить/заменить лишние стикеры руками в draft_content.json.',
+    eta: 'y±0.07 · 300 мс · per-clip',
+  },
+];
+
+function renderConveyorSteps(summary, stepDone, stepActive, totalSteps) {
+  return CV_STEPS.map(step => {
+    let stateCls = 'locked';
+    if (step.num <= stepDone) stateCls = 'done';
+    else if (step.num === stepActive) stateCls = 'active';
+    return renderConveyorStep(step, stateCls, summary);
+  }).join('');
+}
+
+function renderConveyorStep(step, stateCls, summary) {
+  const statusBlock = stateCls === 'done'
+    ? `<span class="dot"></span><b>готов</b><span>· сохранён</span>`
+    : stateCls === 'active'
+      ? `<span class="dot"></span><b>готов к запуску</b>`
+      : `<span class="dot"></span><span>заблокирован шагом ${step.num - 1}</span>`;
+
+  const preview = renderConveyorStepPreview(step, summary);
+  const validate = renderConveyorStepValidate(step, stateCls, summary);
+
+  // На шаге 1 «Редактор плана» доступен всегда (и до запуска, и после).
+  // На шаге 2 «Редактор переходов» доступен, как только собран скелет
+  // (шаг не заблокирован) — переходы пишутся прямо в CapCut-драфт.
+  const editPlanBtn = step.num === 1
+    ? `<button class="cv-step-btn ghost" data-cv-action="edit-plan" data-step="${step.num}">Редактор плана</button>`
+    : (step.num === 2 && stateCls !== 'locked')
+      ? `<button class="cv-step-btn ghost" data-cv-action="edit-plan" data-step="${step.num}">Редактор переходов</button>`
+      : '';
+
+  const ctaRow = stateCls === 'done'
+    ? `
+        <button class="cv-step-btn done">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>
+          <span class="stack">собрано<small>${escapeHtml(step.runner)}</small></span>
+        </button>
+        <button class="cv-step-btn ghost" data-cv-action="rerun" data-step="${step.num}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9"/><path d="m3 3 9 9"/></svg>
+          Пересобрать
+        </button>
+        ${editPlanBtn}
+        <button class="cv-step-btn ghost" data-cv-action="open-capcut" data-step="${step.num}">открыть в CapCut</button>
+        <div class="cv-step-meta">${escapeHtml(step.runner)} · ${escapeHtml(step.eta)}</div>
+      `
+    : stateCls === 'active'
+      ? `
+        <button class="cv-step-btn primary" data-cv-action="run" data-step="${step.num}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5,3 19,12 5,21" fill="currentColor" stroke="none"/></svg>
+          <span class="stack">Запустить шаг ${step.num}<small>${escapeHtml(step.runner)}</small></span>
+        </button>
+        ${editPlanBtn}
+        <div class="cv-step-meta">${escapeHtml(step.eta)}</div>
+      `
+      : `
+        <button class="cv-step-btn" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+          <span class="stack">Запустить шаг ${step.num}<small>${escapeHtml(step.runner)}</small></span>
+        </button>
+        <div class="cv-step-meta">${escapeHtml(step.eta)}</div>
+      `;
+
+  return `
+    <article class="cv-step ${stateCls}">
+      <div class="badge"><div class="ring"><span>${step.num}</span></div></div>
+      <div class="card">
+        <div class="cv-step-head">
+          <div class="cv-step-title">
+            <h3>${step.title}</h3>
+            <span class="tag">${escapeHtml(step.tag)}</span>
+          </div>
+          <div class="cv-step-status">${statusBlock}</div>
+        </div>
+        <div class="cv-step-desc">${step.desc}</div>
+        ${validate}
+        ${preview}
+        <div class="cv-step-cta-row">${ctaRow}</div>
+      </div>
+    </article>
+  `;
+}
+
+function renderConveyorStepValidate(step, stateCls, summary) {
+  // Заглушки: пока показываем фиктивные значения. Заменим на реальные
+  // когда API монтажа начнёт отдавать состояние входов pipeline'а.
+  if (step.num === 1) {
+    return `
+      <div class="cv-validate">
+        <div class="cv-val ok"><div class="ic"></div><div class="text">Аудио sentence<small>elevenlabs/cosyvoice</small></div><div class="count">${summary.audio_done ?? summary.done ?? 0}/${summary.audio_total ?? summary.scene_count}</div></div>
+        <div class="cv-val ok"><div class="ic"></div><div class="text">Видео шоты<small>Veo / approved</small></div><div class="count">${summary.approved_count}/${summary.scene_count}</div></div>
+        <div class="cv-val ok"><div class="ic"></div><div class="text">Музыка<small>thinking_island.mp3</small></div><div class="count">1/1</div></div>
+        <div class="cv-val ok"><div class="ic"></div><div class="text">Интро капс<small>«${escapeHtml(summary.display_name)}.»</small></div><div class="count">ok</div></div>
+      </div>
+    `;
+  }
+  if (step.num === 2) {
+    return `
+      <div class="cv-validate">
+        <div class="cv-val ok"><div class="ic"></div><div class="text">Переходов выбрано<small>из CapCut-драфта</small></div><div class="count" id="cv-trans-count">${Math.max(0, summary.scene_count - 1)}/${Math.max(0, summary.scene_count - 1)}</div></div>
+      </div>
+    `;
+  }
+  if (step.num === 3) {
+    return `
+      <div class="cv-validate">
+        <div class="cv-val ${stateCls === 'locked' ? 'miss' : 'ok'}"><div class="ic"></div><div class="text">Переходы<small>шаг 2</small></div><div class="count">${stateCls === 'locked' ? '—' : 'готов'}</div></div>
+        <div class="cv-val ok"><div class="ic"></div><div class="text">Эталонные стикеры<small>A/B на сцену</small></div><div class="count">${summary.scene_count * 2}</div></div>
+        <div class="cv-val ok"><div class="ic"></div><div class="text">SFX канон Каллисто<small>Pac/coin/ding</small></div><div class="count">ok</div></div>
+      </div>
+    `;
+  }
+  // step 4
+  return `
+    <div class="cv-validate">
+      <div class="cv-val ${stateCls === 'locked' ? 'miss' : 'ok'}"><div class="ic"></div><div class="text">Стикеры размещены<small>шаг 3</small></div><div class="count">${stateCls === 'locked' ? '—' : 'готов'}</div></div>
+      <div class="cv-val ok"><div class="ic"></div><div class="text">Паттерн качки<small>y ±0.07 / 300мс</small></div><div class="count">канон</div></div>
+    </div>
+  `;
+}
+
+function renderConveyorStepPreview(step, summary) {
+  if (step.num === 1) {
+    // Превью «5 дорожек собрано» убрано — оно дублировало плашки
+    // валидации сверху и занимало место без новой информации.
+    return '';
+  }
+  if (step.num === 2) {
+    // План переходов между сценами — реальные стыки из живого CapCut-драфта
+    // (заполняет loadConveyorTransitions). До ответа сервера — заглушка.
+    return `
+      <div class="cv-step-preview">
+        <div class="cv-step-preview-title">план переходов · из CapCut</div>
+        <div class="cv-trans-preview" id="cv-trans-preview">
+          <span class="cv-trans-empty">загрузка переходов из драфта…</span>
+        </div>
+      </div>
+    `;
+  }
+  if (step.num === 3) {
+    const sticks = [
+      ['📱', 'iMessage'], ['⭐', 'Rating 5★'], ['💳', 'Payment'],
+      ['🔔', 'Notif'], ['📊', 'Stats'], ['💬', 'Comment'],
+      ['🎯', 'Target'], ['🏆', 'Trophy'], ['📈', 'Chart up'],
+      ['🔥', 'Streak'], ['💎', 'Premium'], ['🎮', 'Tinder'],
+      ['✅', 'Done'], ['⚡', 'Boost'],
+    ];
+    const items = sticks.map(([e, l]) =>
+      `<div class="cv-stick locked"><div class="emoji">${e}</div>${escapeHtml(l)}</div>`
+    ).join('');
+    return `
+      <div class="cv-step-preview">
+        <div class="cv-step-preview-title">эталон A · ${sticks.length} стикеров</div>
+        <div class="cv-stick-preview">${items}</div>
+      </div>
+    `;
+  }
+  // step 4 — паттерн качки
+  return `
+    <div class="cv-step-preview">
+      <div class="cv-step-preview-title">паттерн качки</div>
+      <div class="cv-skeleton-tracks">
+        <div class="cv-skel-track subs">
+          <div class="lbl">y-offset</div>
+          <div class="strip" style="background:repeating-linear-gradient(90deg, var(--mint-dim) 0 12px, transparent 12px 16px);"></div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function wireConveyorBackHandlers() {
+  const brand = $('cv-brand-back');
+  if (brand) brand.addEventListener('click', () => {
+    if (_currentDepth > 0) history.go(-_currentDepth);
+    else goToChooser();
+  });
+  const crumb = $('cv-crumb-hub');
+  if (crumb) crumb.addEventListener('click', () => goBack(['hub', 'montage']));
+  const back = $('cv-back-list');
+  if (back) back.addEventListener('click', () => goBack(['hub', 'montage']));
+}
+
+function wireConveyorStepButtons(summary) {
+  // Шаги 2-4 пока заглушки — реальные ручки появятся вместе с
+  // automation/conveyor/step_2_enrich.py и далее. Шаг 1 уже подключён.
+  document.querySelectorAll('.conveyor-container [data-cv-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const action = btn.dataset.cvAction;
+      const stepNum = btn.dataset.step;
+      if (action === 'run' && stepNum === '1') {
+        runMontageStep1(summary, btn);
+        return;
+      }
+      if (action === 'rerun' && stepNum === '1') {
+        runMontageStep1(summary, btn, { force: true });
+        return;
+      }
+      if (action === 'edit-plan' && stepNum === '1') {
+        openPlanEditor(summary);
+        return;
+      }
+      if (action === 'edit-plan' && stepNum === '2') {
+        openTransitionEditor(summary);
+        return;
+      }
+      const label = {
+        run: `Запуск шага ${stepNum}`,
+        rerun: `Пересборка шага ${stepNum}`,
+        'edit-plan': `Редактор плана шага ${stepNum}`,
+        'open-capcut': 'Открытие в CapCut',
+      }[action] || `Действие "${action}"`;
+      toast(`${label} — пока заглушка, ручка ещё не подключена`);
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// РЕДАКТОР ПЛАНА · макет А (компактный)
+// ═══════════════════════════════════════════════════════════════════
+// Открывается из cv-step (шаг 1, action="edit-plan"). Грузит метаданные
+// шотов из /api/montage/<scenario>/plan, рисует таблицу-партитуру с
+// inline-слайдерами для start_from и speed_override. Сохраняет тем же
+// endpoint'ом POST'ом, опционально — сразу запускает шаг 1.
+//
+// Структура состояния редактора живёт в this-closure, без глобалок —
+// модалка создаётся и удаляется на каждое открытие.
+
+// step="any" — нативный <input type="range"> работает с float-разрешением
+// браузера (~10000 шагов на трек), что выглядит как непрерывное движение.
+// Численное значение для отображения и сохранения округляется до 2 знаков.
+const PLAN_START_STEP = 'any';
+const PLAN_SPEED_MIN = 0.5;
+const PLAN_SPEED_MAX = 2.0;
+const PLAN_SPEED_STEP = 'any';
+
+async function openPlanEditor(summary) {
+  // Старая открытая модалка должна закрыться раньше — на случай повторного клика.
+  document.getElementById('plan-editor-overlay')?.remove();
+
+  // Показываем skeleton-плашку пока ждём fetch.
+  const overlay = document.createElement('div');
+  overlay.id = 'plan-editor-overlay';
+  overlay.className = 'pe-overlay';
+  overlay.innerHTML = `
+    <div class="pe-shell">
+      <div class="pe-loading">
+        <div class="pe-spinner"></div>
+        <div>Считаю длительности видео и голоса…</div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  // Закрытие по клику на фон (но не на саму shell)
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closePlanEditor();
+  });
+  // ESC закрывает
+  const onEsc = (e) => { if (e.key === 'Escape') closePlanEditor(); };
+  document.addEventListener('keydown', onEsc);
+  overlay.dataset.escHandler = '1';
+  overlay._escHandler = onEsc;
+
+  let meta;
+  try {
+    const res = await fetch(`/api/montage/${encodeURIComponent(summary.name)}/plan`);
+    const data = await res.json();
+    if (!data.ok) {
+      overlay.querySelector('.pe-shell').innerHTML = `<div class="pe-error">Не удалось загрузить план:<br>${escapeHtml(data.message || '???')}</div>`;
+      return;
+    }
+    meta = data;
+  } catch (e) {
+    overlay.querySelector('.pe-shell').innerHTML = `<div class="pe-error">Ошибка сети: ${escapeHtml(e.message)}</div>`;
+    return;
+  }
+
+  // state — мутируем по слайдерам/дропдауну, сохраняем разом в save().
+  // Ключ — scene_key (scene_03), значения совпадают с plan.json shot-entry.
+  //
+  // variant храним ВСЕГДА фактически выбранную версию (для сцен с >1 версией).
+  // Иначе «вернул на v1» не отличить от «не трогал» — и патч не приведёт
+  // драфт к v1, если там уже стоит v2 (баг рассинхрона драфта и плана).
+  const state = { shots: {} };
+  for (const scene of meta.scenes) {
+    for (const shot of scene.shots) {
+      const hasVariants = shot.variants && shot.variants.length > 1;
+      state.shots[shot.scene_key] = {
+        start_from: shot.start_from || 0,
+        speed_override: shot.speed_override ?? null,
+        variant: hasVariants ? shot.variant : null,
+        default_variant: hasVariants ? shot.variants[0].variant : null,
+      };
+    }
+  }
+
+  overlay.querySelector('.pe-shell').innerHTML = renderPlanEditorShell(summary, meta);
+  wirePlanEditor(overlay, summary, meta, state);
+}
+
+function closePlanEditor() {
+  const ov = document.getElementById('plan-editor-overlay');
+  if (!ov) return;
+  if (ov._escHandler) document.removeEventListener('keydown', ov._escHandler);
+  ov.classList.add('pe-out');
+  setTimeout(() => ov.remove(), 160);
+}
+
+function renderPlanEditorShell(summary, meta) {
+  // Сумма длительностей голоса = длина мастера.
+  const masterUs = meta.scenes.reduce((s, sc) => s + (sc.voice_span_us || 0), 0);
+  const masterStr = formatDuration(masterUs / 1_000_000);
+
+  const rowsHtml = meta.scenes.map(scene => renderPlanEditorScene(scene)).join('');
+
+  return `
+    <header class="pe-head">
+      <div class="pe-head-left">
+        <div class="pe-bcrumb">сборка / pipeline / capcut / <em>редактор плана</em></div>
+        <h2>Редактор <i>плана</i> · <span class="pe-step">шаг 1</span>
+          <small>${escapeHtml(summary.display_name)} · ${meta.scenes.length} сцен · ${meta.total_shots} шотов</small>
+        </h2>
+      </div>
+      <div class="pe-head-meta">
+        <div><b>${escapeHtml(masterStr)}</b><span>длина мастера</span></div>
+        <div><b class="pe-mint" data-pe-edited-count>${meta.edited_count}</b><span>правок</span></div>
+        <div><b>${meta.total_shots}/${meta.total_shots}</b><span>шотов</span></div>
+      </div>
+      <button class="pe-close" title="Закрыть (Esc)">×</button>
+    </header>
+
+    <div class="pe-toolbar">
+      <span class="pe-lbl">фильтр</span>
+      <button class="pe-chip is-on" data-pe-filter="all">всё (${meta.total_shots})</button>
+      <button class="pe-chip" data-pe-filter="edited">только правки (<span data-pe-edited-count>${meta.edited_count}</span>)</button>
+      <span class="pe-grow"></span>
+      <button class="pe-ghost" data-pe-action="reset-all">⟲ сбросить всё</button>
+    </div>
+
+    <div class="pe-grid-head">
+      <span>#</span>
+      <span>sentence + текст</span>
+      <span>видеошот</span>
+      <span>старт &nbsp;·&nbsp; 0.0 — N.N s</span>
+      <span>скорость &nbsp;·&nbsp; 0.5 — 2.0 ×</span>
+      <span style="text-align:center">скраб</span>
+      <span style="text-align:center" title="Применить / сбросить эту сцену">⟳ ↺</span>
+    </div>
+    <div class="pe-rows">${rowsHtml}</div>
+
+    <footer class="pe-footer">
+      <span class="pe-summary">
+        <b data-pe-edited-count>${meta.edited_count}</b> правок ·
+        ${meta.total_shots - meta.edited_count} на автомате
+      </span>
+      <span class="pe-grow"></span>
+      <button class="pe-btn pe-btn-secondary" data-pe-action="cancel">Отменить</button>
+      <button class="pe-btn pe-btn-secondary" data-pe-action="save">Сохранить план</button>
+      <button class="pe-btn pe-btn-primary" data-pe-action="save-and-run">▶ Сохранить и запустить шаг 1</button>
+    </footer>
+  `;
+}
+
+function renderPlanEditorScene(scene) {
+  // Цитата = первый sentence (если их несколько, склеиваем).
+  const quote = scene.audios.map(a => a.text).filter(Boolean).join(' ').slice(0, 90);
+  const sentLabel = scene.audios.map(a => a.sent).join(' + ');
+  // Один ряд = один shot. Если в сцене 2 шота, второй ряд показывает «↳» вместо номера.
+  return scene.shots.map((shot, idx) => {
+    const isFirst = idx === 0;
+    const target = shot.target_duration_s ?? '?';
+    const src = shot.src_duration_s ?? '?';
+    const maxStart = computeMaxStart(shot);  // максимальный старт-сдвиг в секундах
+    const startInit = shot.start_from || 0;
+    const speedInit = shot.speed_override ?? shot.auto_speed ?? 1.0;
+    const variants = shot.variants || [];
+    const variantOverridden = variants.length > 1 && shot.variant !== variants[0].variant;
+    const isEdited = startInit > 0 || shot.speed_override !== null || variantOverridden;
+    const variantsJson = escapeHtml(JSON.stringify(variants));
+    // Дропдаун версий показываем только если их больше одной.
+    const variantSelect = variants.length > 1
+      ? `<select class="pe-variant" data-variant title="Версия видеошота (у версий разная длина)">
+           ${variants.map(v => `<option value="${v.variant}" ${v.variant === shot.variant ? 'selected' : ''}>${v.variant} · ${v.duration_s != null ? v.duration_s.toFixed(1) + 's' : '?'}</option>`).join('')}
+         </select>`
+      : `<span class="pe-variant-single">${shot.variant}</span>`;
+    return `
+      <div class="pe-row ${isEdited ? 'is-edited' : ''}"
+           data-scene-key="${escapeHtml(shot.scene_key)}"
+           data-max-start="${maxStart.toFixed(3)}"
+           data-target-s="${(shot.target_duration_s || 0).toFixed(3)}"
+           data-src-s="${(shot.src_duration_s || 0).toFixed(3)}"
+           data-auto-speed="${(shot.auto_speed || 1).toFixed(3)}"
+           data-default-variant="${variants[0] ? variants[0].variant : ''}"
+           data-variants='${variantsJson}'>
+        <span class="pe-sid">${isFirst ? scene.sid : '<span class="pe-cont">↳</span>'}</span>
+        <span class="pe-sent">
+          ${isFirst ? `<b>${escapeHtml(sentLabel)}</b> <span class="pe-dur">${scene.voice_span_s.toFixed(1)} s</span>` : '<span class="pe-dim">··· (та же сцена)</span>'}
+          ${isFirst && quote ? `<em class="pe-preview">${escapeHtml(quote)}${quote.length >= 90 ? '…' : ''}</em>` : ''}
+        </span>
+        <span class="pe-shot">
+          <span class="pe-shot-top">
+            <span class="pe-shot-name">${escapeHtml(scene.shots.length > 1 ? shot.scene_key : shot.file.replace(/\.(mp4|webm|mov)$/i, ''))}</span>
+            ${variantSelect}
+          </span>
+          <span class="pe-shot-src" data-shot-src>src ${typeof src === 'number' ? src.toFixed(1) : src} s → ${target.toFixed ? target.toFixed(1) : target} s</span>
+        </span>
+        <span class="pe-ctrl">
+          <input type="range" data-kind="start"
+                 min="0" max="${maxStart.toFixed(3)}" step="${PLAN_START_STEP}"
+                 value="${startInit.toFixed(3)}"
+                 ${maxStart <= 0 ? 'disabled' : ''}>
+          <span class="pe-val ${startInit > 0 ? 'pe-mint' : 'pe-auto'}" data-val="start">
+            ${maxStart <= 0 ? '—' : startInit.toFixed(2) + ' s'}
+          </span>
+        </span>
+        <span class="pe-ctrl">
+          <input type="range" data-kind="speed"
+                 min="${PLAN_SPEED_MIN}" max="${PLAN_SPEED_MAX}" step="${PLAN_SPEED_STEP}"
+                 value="${speedInit.toFixed(3)}">
+          <span class="pe-val ${shot.speed_override !== null ? 'pe-mint' : 'pe-auto'}" data-val="speed">
+            ${shot.speed_override !== null ? speedInit.toFixed(2) + '×' : 'auto · ' + (shot.auto_speed || 1).toFixed(2) + '×'}
+          </span>
+        </span>
+        <span class="pe-scrub">
+          <span class="pe-scrub-full"></span>
+          <span class="pe-scrub-window"></span>
+          <span class="pe-scrub-marker"></span>
+        </span>
+        <span class="pe-rowactions">
+          <button class="pe-apply" data-pe-apply title="Применить только эту сцену к собранному проекту (без полной пересборки)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9"/><path d="m3 3 9 9"/></svg>
+          </button>
+          <button class="pe-reset-row" data-pe-reset title="Сбросить правки этой сцены (старт = 0, скорость = авто)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 2v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L3 8"/></svg>
+          </button>
+        </span>
+      </div>`;
+  }).join('');
+}
+
+// max_start: сколько секунд можно «съесть» с начала видео.
+// Раньше ограничивали `src - target`, чтобы оставшийся хвост точно покрывал
+// голос. Сейчас разрешаем сдвинуться вплоть до `src - 0.1s` — если хвоста
+// не хватит, build_skeleton автоматически замедлит видео (speed = хвост/target),
+// и UI динамически сдвигает правый ползунок скорости в эту позицию.
+function computeMaxStart(shot) {
+  const src = shot.src_duration_s || 0;
+  // Минимум 0.1с оставляем под хвост — иначе source_timerange схлопнется в 0.
+  return Math.max(0, +(src - 0.1).toFixed(2));
+}
+
+// auto_speed для текущего start_from (логика build_skeleton):
+//   eff_src = src - start_from
+//   если eff_src >= target → speed = 1.0 (обрезка)
+//   иначе                  → speed = eff_src / target (замедление)
+function computeAutoSpeed(srcS, targetS, startS) {
+  if (srcS <= 0 || targetS <= 0) return 1.0;
+  const eff = Math.max(0.01, srcS - startS);
+  return eff >= targetS ? 1.0 : eff / targetS;
+}
+
+function wirePlanEditor(overlay, summary, meta, state) {
+  // ── Слайдеры на каждом ряду ──
+  overlay.querySelectorAll('.pe-row').forEach(row => {
+    const key = row.dataset.sceneKey;
+    const targetS = parseFloat(row.dataset.targetS);
+    const defaultVariant = row.dataset.defaultVariant || '';
+    let variants = [];
+    try { variants = JSON.parse(row.dataset.variants || '[]'); } catch { variants = []; }
+
+    // srcS/maxStart МЕНЯЮТСЯ при смене версии видео (разная длина).
+    let srcS = parseFloat(row.dataset.srcS);
+    let maxStart = parseFloat(row.dataset.maxStart);
+
+    const inputs = row.querySelectorAll('input[type="range"]');
+    const startInput = inputs[0];
+    const speedInput = inputs[1];
+    const valStart = row.querySelector('[data-val="start"]');
+    const valSpeed = row.querySelector('[data-val="speed"]');
+    const scrub = row.querySelector('.pe-scrub');
+    const variantSelect = row.querySelector('[data-variant]');
+    const shotSrcLabel = row.querySelector('[data-shot-src]');
+
+    // userTouchedSpeed = true как только пользователь сам двинул ползунок
+    // скорости. Пока false — слайдер «приклеен» к auto-значению и сдвигается
+    // вместе со start. Сбрасывается на «Reset all».
+    let userTouchedSpeed = state.shots[key].speed_override !== null;
+    speedInput.addEventListener('input', () => { userTouchedSpeed = true; });
+
+    // ── Смена версии видеошота (другой файл → другая длина) ──
+    if (variantSelect) {
+      variantSelect.addEventListener('change', () => {
+        const v = variantSelect.value;
+        const vm = variants.find(x => x.variant === v);
+        const newSrc = vm && vm.duration_s != null ? vm.duration_s : srcS;
+        srcS = newSrc;
+        maxStart = Math.max(0, +(srcS - 0.1).toFixed(2));
+        startInput.max = maxStart.toFixed(3);
+        if (parseFloat(startInput.value) > maxStart) startInput.value = maxStart.toFixed(3);
+        startInput.disabled = maxStart <= 0;
+        if (shotSrcLabel) {
+          shotSrcLabel.textContent = `src ${srcS.toFixed(1)} s → ${targetS.toFixed(1)} s`;
+        }
+        // Храним ВСЕГДА фактически выбранную версию (даже дефолтную), чтобы
+        // патч точно привёл драфт к ней. «edited»-подсветка — отдельно.
+        state.shots[key].variant = v;
+        refresh();
+      });
+    }
+
+    function refresh() {
+      const cur = state.shots[key];
+      const startVal = parseFloat(startInput.value);
+      const dynamicAuto = computeAutoSpeed(srcS, targetS, startVal);
+
+      // Если юзер не трогал скорость — приклеиваем ползунок к auto.
+      if (!userTouchedSpeed) {
+        speedInput.value = dynamicAuto.toString();
+      }
+      const speedSrc = parseFloat(speedInput.value);
+
+      // speed_override = null когда значение совпадает с текущим auto.
+      const speedVal = (!userTouchedSpeed || Math.abs(speedSrc - dynamicAuto) < 0.001)
+        ? null
+        : speedSrc;
+
+      cur.start_from = startVal;
+      cur.speed_override = speedVal;
+
+      // Подпись старта
+      if (maxStart <= 0) {
+        valStart.textContent = '—';
+      } else {
+        valStart.textContent = startVal.toFixed(2) + ' s';
+      }
+      valStart.classList.toggle('pe-mint', startVal > 0);
+      valStart.classList.toggle('pe-auto', startVal === 0);
+
+      // Подпись скорости — auto показывает актуальный auto (с учётом start),
+      // ручное значение показывает само себя.
+      if (speedVal === null) {
+        valSpeed.textContent = `auto · ${dynamicAuto.toFixed(2)}×`;
+        valSpeed.classList.add('pe-auto');
+        valSpeed.classList.remove('pe-mint');
+      } else {
+        valSpeed.textContent = speedVal.toFixed(2) + '×';
+        valSpeed.classList.remove('pe-auto');
+        valSpeed.classList.add('pe-mint');
+      }
+
+      // variant считается правкой только если отличается от дефолтной версии.
+      const variantEdited = cur.variant != null && cur.variant !== defaultVariant;
+      const isEdited = startVal > 0 || speedVal !== null || variantEdited;
+      row.classList.toggle('is-edited', isEdited);
+
+      // Скраб: окно начинается с start_from. Его длина в source-секундах =
+      // target × effSpeed (если auto<1 → окно уже = target×auto = хвост).
+      if (scrub && srcS > 0) {
+        const effSpeed = speedVal === null ? dynamicAuto : speedVal;
+        const windowSrcDur = Math.min(srcS - startVal, targetS * effSpeed);
+        const startPct = (startVal / srcS) * 100;
+        const widthPct = Math.max(0, (windowSrcDur / srcS) * 100);
+        const win = scrub.querySelector('.pe-scrub-window');
+        const mk = scrub.querySelector('.pe-scrub-marker');
+        win.style.left = startPct + '%';
+        win.style.width = widthPct + '%';
+        mk.style.left = startPct + '%';
+      }
+      updateEditedCount(overlay, state);
+    }
+    // refresh-чейн: start двигает speed (если auto), speed двигает только подпись.
+    startInput.addEventListener('input', refresh);
+    speedInput.addEventListener('input', refresh);
+    // Reset (двойной клик на val) — сбрасываем userTouchedSpeed.
+    valSpeed.addEventListener('dblclick', () => {
+      userTouchedSpeed = false;
+      refresh();
+    });
+    refresh();
+
+    // Возврат версии к дефолтной (первой) — для reset.
+    function resetVariant() {
+      if (variantSelect && defaultVariant) {
+        variantSelect.value = defaultVariant;
+        const vm = variants.find(x => x.variant === defaultVariant);
+        srcS = vm && vm.duration_s != null ? vm.duration_s : srcS;
+        maxStart = Math.max(0, +(srcS - 0.1).toFixed(2));
+        startInput.max = maxStart.toFixed(3);
+        startInput.disabled = maxStart <= 0;
+        if (shotSrcLabel) shotSrcLabel.textContent = `src ${srcS.toFixed(1)} s → ${targetS.toFixed(1)} s`;
+        // Явно фиксируем дефолтную версию (а не null), чтобы патч привёл
+        // драфт обратно к ней, если там стоит другая.
+        state.shots[key].variant = defaultVariant;
+      } else {
+        state.shots[key].variant = null;
+      }
+    }
+
+    // Экспортируем refresh, чтобы reset-all мог вызвать его после смены value.
+    row._refresh = refresh;
+    row._resetUserSpeed = () => { userTouchedSpeed = false; };
+    row._resetVariant = resetVariant;
+
+    // ── Точечное применение этой сцены к собранному проекту ──
+    const applyBtn = row.querySelector('[data-pe-apply]');
+    if (applyBtn) {
+      applyBtn.addEventListener('click', () => applyPlanShot(summary, key, state, applyBtn));
+    }
+
+    // ── Сброс правок только этой строки (старт=0, скорость=авто, версия=дефолт) ──
+    const resetBtn = row.querySelector('[data-pe-reset]');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', () => {
+        startInput.value = '0';
+        userTouchedSpeed = false;
+        resetVariant();
+        refresh();
+      });
+    }
+  });
+
+  // ── Фильтр-чипсы ──
+  overlay.querySelectorAll('.pe-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      overlay.querySelectorAll('.pe-chip').forEach(c => c.classList.remove('is-on'));
+      chip.classList.add('is-on');
+      const filter = chip.dataset.peFilter;
+      overlay.querySelectorAll('.pe-row').forEach(row => {
+        const edited = row.classList.contains('is-edited');
+        row.style.display = (filter === 'edited' && !edited) ? 'none' : '';
+      });
+    });
+  });
+
+  // ── Reset-all: вернуть start=0, скорость auto, версию к дефолтной.
+  overlay.querySelector('[data-pe-action="reset-all"]').addEventListener('click', () => {
+    overlay.querySelectorAll('.pe-row').forEach(row => {
+      const startInput = row.querySelector('input[data-kind="start"]');
+      startInput.value = '0';
+      if (row._resetUserSpeed) row._resetUserSpeed();
+      if (row._resetVariant) row._resetVariant();
+      if (row._refresh) row._refresh();
+    });
+  });
+
+  // ── Закрытие ──
+  overlay.querySelector('.pe-close').addEventListener('click', closePlanEditor);
+  overlay.querySelector('[data-pe-action="cancel"]').addEventListener('click', closePlanEditor);
+
+  // ── Сохранить ──
+  overlay.querySelector('[data-pe-action="save"]').addEventListener('click', async () => {
+    await savePlanState(summary, state);
+    toast('План сохранён в content/<миф>/montage/plan.json', 'success');
+    closePlanEditor();
+  });
+
+  // ── Сохранить и запустить шаг 1 ──
+  overlay.querySelector('[data-pe-action="save-and-run"]').addEventListener('click', async (e) => {
+    const ok = await savePlanState(summary, state);
+    if (!ok) return;
+    closePlanEditor();
+    // Симулируем клик по «Запустить шаг 1» в существующей карточке шага.
+    const runBtn = document.querySelector('[data-cv-action="run"][data-step="1"]')
+                || document.querySelector('[data-cv-action="rerun"][data-step="1"]');
+    if (runBtn) runBtn.click();
+    else toast('План сохранён, но не нашёл кнопку «Запустить шаг 1». Нажми вручную.', 'warn');
+  });
+}
+
+function updateEditedCount(overlay, state) {
+  const n = Object.values(state.shots).filter(
+    s => (s.start_from > 0) || (s.speed_override !== null)
+      || (s.variant != null && s.variant !== s.default_variant)
+  ).length;
+  overlay.querySelectorAll('[data-pe-edited-count]').forEach(el => { el.textContent = n; });
+}
+
+// Точечный патч одного шота в уже собранном CapCut-проекте.
+// Не пересобирает весь шаг 1 — меняет только source/speed одного сегмента.
+async function applyPlanShot(summary, shotKey, state, btn) {
+  if (btn.dataset.busy === '1') return;
+  const cur = state.shots[shotKey] || { start_from: 0, speed_override: null, variant: null };
+  btn.dataset.busy = '1';
+  btn.classList.add('is-busy');
+  try {
+    const res = await fetch(`/api/montage/${encodeURIComponent(summary.name)}/patch-shot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        shot_key: shotKey,
+        start_from: cur.start_from || 0,
+        speed_override: cur.speed_override ?? null,
+        variant: cur.variant ?? null,
+      }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      const detail = (data.stderr || data.stdout || '').slice(-400);
+      console.error('[patch-shot]', data);
+      toast(`Не удалось применить ${shotKey}: ${data.message || '???'}`, 'error');
+      if (detail) alert(`Патч ${shotKey} не прошёл:\n\n${data.message || ''}\n\n${detail}`);
+    } else {
+      console.log('[patch-shot]', data.stdout);
+      btn.classList.add('is-done');
+      setTimeout(() => btn.classList.remove('is-done'), 1500);
+      toast(`Сцена ${shotKey} обновлена в CapCut (без пересборки).`, 'success');
+    }
+  } catch (e) {
+    toast(`Ошибка сети при патче ${shotKey}: ${e.message}`, 'error');
+  } finally {
+    btn.dataset.busy = '0';
+    btn.classList.remove('is-busy');
+  }
+}
+
+async function savePlanState(summary, state) {
+  try {
+    const res = await fetch(`/api/montage/${encodeURIComponent(summary.name)}/plan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shots: state.shots }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      toast('Не удалось сохранить план: ' + (data.message || '???'), 'error');
+      return false;
+    }
+    return true;
+  } catch (e) {
+    toast('Ошибка сети при сохранении плана: ' + e.message, 'error');
+    return false;
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+// РЕДАКТОР ПЕРЕХОДОВ · шаг 2 · макет «Партитура стыков»
+// ═══════════════════════════════════════════════════════════════════
+// Открывается из cv-step (шаг 2, action="edit-plan"). Грузит реальные
+// переходы из живого CapCut-драфта (/transitions) + каталог канон-
+// переходов, рисует ряды-стыки с дропдауном перехода и слайдером
+// длительности. «Сохранить» пишет план прямо в draft_content.json
+// (с бэкапом) и расставляет канон-SFX. CapCut должен быть закрыт.
+
+const TX_FAMILY_LABELS = {
+  cut: 'Без перехода', zoom: 'Зум', directional: 'Направленные',
+  swish: 'Взмах', paper: 'Бумага', texture: 'Фактурные',
+};
+const TX_FAMILY_ORDER = ['cut', 'zoom', 'directional', 'swish', 'paper', 'texture'];
+
+function txSfxBadge(sfx) {
+  if (sfx === 'whoosh') return { text: 'WHOOSH · 0.70', cls: 'tx-sfx-local' };
+  if (sfx === 'crumpled') return { text: 'crumpled · 1.00', cls: 'tx-sfx-local' };
+  if (sfx === 'swoosh') return { text: 'Swoosh · вручную', cls: 'tx-sfx-manual' };
+  return { text: '—', cls: 'tx-sfx-none' };
+}
+
+async function openTransitionEditor(summary) {
+  document.getElementById('trans-editor-overlay')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'trans-editor-overlay';
+  overlay.className = 'pe-overlay';
+  overlay.innerHTML = `
+    <div class="pe-shell">
+      <div class="pe-loading">
+        <div class="pe-spinner"></div>
+        <div>Читаю переходы из CapCut-драфта…</div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeTransitionEditor(); });
+  const onEsc = (e) => { if (e.key === 'Escape') closeTransitionEditor(); };
+  document.addEventListener('keydown', onEsc);
+  overlay._escHandler = onEsc;
+
+  let data;
+  try {
+    data = await fetchJSON(`/api/montage/${encodeURIComponent(summary.name)}/transitions`);
+  } catch (e) {
+    overlay.querySelector('.pe-shell').innerHTML = `<div class="pe-error">Ошибка сети: ${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  if (!data.ok) {
+    overlay.querySelector('.pe-shell').innerHTML = `<div class="pe-error">${escapeHtml(data.message || 'Не удалось загрузить переходы')}</div>`;
+    return;
+  }
+  if (!data.ready) {
+    overlay.querySelector('.pe-shell').innerHTML = `
+      <div class="pe-error" style="color:var(--text-dim)">
+        Скелет ещё не собран — запусти шаг 1, потом возвращайся за переходами.
+      </div>`;
+    return;
+  }
+
+  const catalog = data.catalog || [];
+  const catById = {};
+  catalog.forEach(c => { if (c.effect_id) catById[c.effect_id] = c; });
+
+  // state — массив стыков; каждый хранит текущий + исходный выбор (для reset).
+  const state = data.transitions.map((t, i) => ({
+    index: i,
+    from: t.from, to: t.to,
+    effect_id: t.effect_id,
+    duration: t.duration ?? (t.effect_id && catById[t.effect_id] ? catById[t.effect_id].default_dur_us / 1e6 : null),
+    orig_effect_id: t.effect_id,
+    orig_duration: t.duration,
+  }));
+
+  overlay.querySelector('.pe-shell').innerHTML = renderTransitionEditorShell(summary, state, catalog);
+  wireTransitionEditor(overlay, summary, state, catById);
+}
+
+function closeTransitionEditor() {
+  const ov = document.getElementById('trans-editor-overlay');
+  if (!ov) return;
+  if (ov._escHandler) document.removeEventListener('keydown', ov._escHandler);
+  ov.classList.add('pe-out');
+  setTimeout(() => ov.remove(), 160);
+}
+
+function renderTxSelect(catalog, selectedEid) {
+  const byFam = {};
+  catalog.forEach(c => { (byFam[c.family] = byFam[c.family] || []).push(c); });
+  const groups = TX_FAMILY_ORDER.filter(f => byFam[f]).map(fam => {
+    if (fam === 'cut') {
+      const c = byFam.cut[0];
+      const sel = !selectedEid ? 'selected' : '';
+      return `<option value="" ${sel}>${escapeHtml(c.name)}</option>`;
+    }
+    const opts = byFam[fam].map(c => {
+      const sel = c.effect_id === selectedEid ? 'selected' : '';
+      return `<option value="${c.effect_id}" ${sel}>${escapeHtml(c.name)}</option>`;
+    }).join('');
+    return `<optgroup label="${escapeHtml(TX_FAMILY_LABELS[fam])}">${opts}</optgroup>`;
+  }).join('');
+  return `<select class="tx-select" data-tx-select>${groups}</select>`;
+}
+
+function renderTransitionEditorShell(summary, state, catalog) {
+  const total = state.length;
+  const picked = state.filter(s => s.effect_id).length;
+  const rows = state.map(s => renderTransitionRow(s, catalog)).join('');
+
+  return `
+    <header class="pe-head">
+      <div class="pe-head-left">
+        <div class="pe-bcrumb">сборка / pipeline / capcut / <em>редактор переходов</em></div>
+        <h2>Редактор <i>переходов</i> · <span class="pe-step">шаг 2</span>
+          <small>${escapeHtml(summary.display_name)} · ${total} стыков · CapCut закроется и откроется сам</small>
+        </h2>
+      </div>
+      <div class="pe-head-meta">
+        <div><b class="pe-mint" data-tx-picked>${picked}</b><span>переходов</span></div>
+        <div><b data-tx-cut>${total - picked}</b><span>cut</span></div>
+        <div><b>${total}</b><span>стыков</span></div>
+      </div>
+      <button class="pe-close" title="Закрыть (Esc)">×</button>
+    </header>
+
+    <div class="pe-toolbar">
+      <span class="pe-lbl">фильтр</span>
+      <button class="pe-chip is-on" data-tx-filter="all">всё (${total})</button>
+      <button class="pe-chip" data-tx-filter="picked">с переходом (<span data-tx-picked>${picked}</span>)</button>
+      <button class="pe-chip" data-tx-filter="cut">cut (<span data-tx-cut>${total - picked}</span>)</button>
+      <span class="pe-grow"></span>
+      <button class="pe-ghost" data-tx-action="reset-all">⟲ вернуть как в драфте</button>
+    </div>
+
+    <div class="tx-grid-head">
+      <span>стык</span>
+      <span>переход</span>
+      <span>длительность · 0.2 — 2.0 s</span>
+      <span>sfx</span>
+      <span style="text-align:center">⟳ ↺</span>
+    </div>
+    <div class="pe-rows" data-tx-rows>${rows}</div>
+
+    <footer class="pe-footer">
+      <span class="pe-summary"><b data-tx-edited>0</b> правок · запустит шаг 2 (переходы + SFX)</span>
+      <span class="pe-grow"></span>
+      <button class="pe-btn pe-btn-secondary" data-tx-action="cancel">Отменить</button>
+      <button class="pe-btn pe-btn-primary" data-tx-action="save">Сохранить и запустить шаг 2</button>
+    </footer>
+  `;
+}
+
+function renderTransitionRow(s, catalog) {
+  const cat = s.effect_id ? catalog.find(c => c.effect_id === s.effect_id) : null;
+  const badge = txSfxBadge(cat ? cat.sfx : null);
+  const isCut = !s.effect_id;
+  const durVal = s.duration != null ? s.duration : 0.7;
+  return `
+    <div class="tx-row" data-tx-index="${s.index}">
+      <span class="tx-sid"><b>${s.from}</b><i>→</i><b>${s.to}</b></span>
+      <span class="tx-pick">${renderTxSelect(catalog, s.effect_id)}</span>
+      <span class="pe-ctrl tx-dur">
+        <input type="range" min="0.2" max="2.0" step="0.01" value="${durVal}" data-tx-dur ${isCut ? 'disabled' : ''}>
+        <span class="pe-val ${isCut ? 'pe-auto' : 'pe-mint'}" data-tx-durval>${isCut ? '—' : durVal.toFixed(2) + ' s'}</span>
+      </span>
+      <span class="tx-sfx ${badge.cls}" data-tx-sfx>${escapeHtml(badge.text)}</span>
+      <span class="tx-rowactions">
+        <button class="pe-apply" data-tx-apply title="Применить только этот стык к CapCut-драфту (без полной записи)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9"/><path d="m3 3 9 9"/></svg>
+        </button>
+        <button class="pe-reset-row" data-tx-reset title="Вернуть как в драфте">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 2v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L3 8"/></svg>
+        </button>
+      </span>
+    </div>`;
+}
+
+function wireTransitionEditor(overlay, summary, state, catById) {
+  const recount = () => {
+    const picked = state.filter(s => s.effect_id).length;
+    const edited = state.filter(s =>
+      s.effect_id !== s.orig_effect_id ||
+      (s.effect_id && Math.abs((s.duration || 0) - (s.orig_duration || 0)) > 0.005)
+    ).length;
+    overlay.querySelectorAll('[data-tx-picked]').forEach(el => { el.textContent = picked; });
+    overlay.querySelectorAll('[data-tx-cut]').forEach(el => { el.textContent = state.length - picked; });
+    const ed = overlay.querySelector('[data-tx-edited]');
+    if (ed) ed.textContent = edited;
+  };
+  overlay._txRecount = recount;
+
+  const syncRow = (row, s) => {
+    const cat = s.effect_id ? catById[s.effect_id] : null;
+    const badge = txSfxBadge(cat ? cat.sfx : null);
+    const isCut = !s.effect_id;
+    const durInput = row.querySelector('[data-tx-dur]');
+    const durVal = row.querySelector('[data-tx-durval]');
+    const sfxEl = row.querySelector('[data-tx-sfx]');
+    durInput.disabled = isCut;
+    if (isCut) {
+      durVal.textContent = '—';
+      durVal.classList.add('pe-auto'); durVal.classList.remove('pe-mint');
+    } else {
+      durInput.value = String(s.duration ?? 0.7);
+      durVal.textContent = (s.duration ?? 0.7).toFixed(2) + ' s';
+      durVal.classList.remove('pe-auto'); durVal.classList.add('pe-mint');
+    }
+    sfxEl.textContent = badge.text;
+    sfxEl.className = `tx-sfx ${badge.cls}`;
+    const editedRow = s.effect_id !== s.orig_effect_id ||
+      (s.effect_id && Math.abs((s.duration || 0) - (s.orig_duration || 0)) > 0.005);
+    row.classList.toggle('is-edited', !!editedRow);
+  };
+
+  overlay.querySelectorAll('.tx-row').forEach(row => {
+    const idx = parseInt(row.dataset.txIndex, 10);
+    const s = state[idx];
+    const select = row.querySelector('[data-tx-select]');
+    const durInput = row.querySelector('[data-tx-dur]');
+
+    select.addEventListener('change', () => {
+      const eid = select.value || null;
+      s.effect_id = eid;
+      if (eid) {
+        // При выборе перехода — подставляем дефолтную длительность каталога.
+        const cat = catById[eid];
+        s.duration = cat ? +(cat.default_dur_us / 1e6).toFixed(2) : 0.7;
+      }
+      syncRow(row, s);
+      recount();
+    });
+
+    durInput.addEventListener('input', () => {
+      s.duration = parseFloat(durInput.value);
+      const durVal = row.querySelector('[data-tx-durval]');
+      durVal.textContent = s.duration.toFixed(2) + ' s';
+      durVal.classList.remove('pe-auto'); durVal.classList.add('pe-mint');
+      row.classList.add('is-edited');
+      recount();
+    });
+
+    const applyBtn = row.querySelector('[data-tx-apply]');
+    applyBtn.addEventListener('click', () => applyTransitionOne(summary, s, applyBtn));
+
+    const resetBtn = row.querySelector('[data-tx-reset]');
+    resetBtn.addEventListener('click', () => {
+      s.effect_id = s.orig_effect_id;
+      s.duration = s.orig_duration ?? (s.effect_id && catById[s.effect_id] ? +(catById[s.effect_id].default_dur_us / 1e6).toFixed(2) : null);
+      select.value = s.effect_id || '';
+      syncRow(row, s);
+      recount();
+    });
+  });
+
+  // Фильтр
+  overlay.querySelectorAll('.pe-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      overlay.querySelectorAll('.pe-chip').forEach(c => c.classList.remove('is-on'));
+      chip.classList.add('is-on');
+      const f = chip.dataset.txFilter;
+      overlay.querySelectorAll('.tx-row').forEach(row => {
+        const s = state[parseInt(row.dataset.txIndex, 10)];
+        let show = true;
+        if (f === 'picked') show = !!s.effect_id;
+        else if (f === 'cut') show = !s.effect_id;
+        row.style.display = show ? '' : 'none';
+      });
+    });
+  });
+
+  // Вернуть всё как в драфте
+  overlay.querySelector('[data-tx-action="reset-all"]').addEventListener('click', () => {
+    overlay.querySelectorAll('.tx-row').forEach(row => {
+      const s = state[parseInt(row.dataset.txIndex, 10)];
+      s.effect_id = s.orig_effect_id;
+      s.duration = s.orig_duration ?? (s.effect_id && catById[s.effect_id] ? +(catById[s.effect_id].default_dur_us / 1e6).toFixed(2) : null);
+      row.querySelector('[data-tx-select]').value = s.effect_id || '';
+      syncRow(row, s);
+    });
+    recount();
+  });
+
+  overlay.querySelector('.pe-close').addEventListener('click', closeTransitionEditor);
+  overlay.querySelector('[data-tx-action="cancel"]').addEventListener('click', closeTransitionEditor);
+
+  overlay.querySelector('[data-tx-action="save"]').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    if (btn.dataset.busy === '1') return;
+    btn.dataset.busy = '1';
+    btn.textContent = 'Шаг 2 идёт…';
+    const plan = state.map(s => ({
+      index: s.index,
+      effect_id: s.effect_id,
+      duration: s.effect_id ? s.duration : undefined,
+    }));
+    try {
+      const res = await fetch(`/api/montage/${encodeURIComponent(summary.name)}/transitions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transitions: plan }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        toast(data.message || 'Не удалось сохранить переходы', res.status === 409 ? 'warn' : 'error');
+        btn.dataset.busy = '0';
+        btn.textContent = 'Сохранить и запустить шаг 2';
+        return;
+      }
+      toast(`Шаг 2 готов: ${data.picked} переходов, ${data.total - data.picked} cut. Если CapCut был открыт — он перезапущен с проектом.`, 'success');
+      closeTransitionEditor();
+      loadConveyorTransitions(summary.name);
+    } catch (err) {
+      toast('Ошибка сети при сохранении: ' + err.message, 'error');
+      btn.dataset.busy = '0';
+      btn.textContent = 'Сохранить и запустить шаг 2';
+    }
+  });
+
+  recount();
+}
+
+// Точечное применение одного стыка к живому CapCut-драфту (аналог
+// applyPlanShot на шаге 1). Прочие стыки сохраняются как в драфте.
+async function applyTransitionOne(summary, s, btn) {
+  if (btn.dataset.busy === '1') return;
+  btn.dataset.busy = '1';
+  btn.classList.add('is-busy');
+  try {
+    const res = await fetch(`/api/montage/${encodeURIComponent(summary.name)}/transitions/apply-one`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        index: s.index,
+        effect_id: s.effect_id,
+        duration: s.effect_id ? s.duration : undefined,
+      }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      toast(data.message || `Не удалось применить стык ${s.from}→${s.to}`,
+            res.status === 409 ? 'warn' : 'error');
+      return;
+    }
+    // Стык применён — он больше не «правка»: фиксируем как исходный.
+    s.orig_effect_id = s.effect_id;
+    s.orig_duration = s.effect_id ? s.duration : null;
+    const row = btn.closest('.tx-row');
+    if (row) row.classList.remove('is-edited');
+    const ov = document.getElementById('trans-editor-overlay');
+    if (ov && ov._txRecount) ov._txRecount();
+    btn.classList.add('is-done');
+    setTimeout(() => btn.classList.remove('is-done'), 1500);
+    toast(`Стык ${s.from}→${s.to} применён в CapCut-драфте.`, 'success');
+    loadConveyorTransitions(summary.name);
+  } catch (err) {
+    toast(`Ошибка сети при применении стыка ${s.from}→${s.to}: ${err.message}`, 'error');
+  } finally {
+    btn.dataset.busy = '0';
+    btn.classList.remove('is-busy');
+  }
+}
+
+
+// Запуск automation/conveyor/step_1_build.py из webapp.
+//
+// Blocking-вызов: бэкенд держит соединение пока скрипт работает (10-60 с
+// без whisper, до 5+ минут с whisper-medium). На кнопке показываем
+// спиннер и блокируем повторный клик; по завершении показываем toast и
+// перерисовываем хаб монтажа, чтобы шаг 1 стал «готов».
+async function runMontageStep1(summary, btn, opts = {}) {
+  if (btn.dataset.busy === '1') return;
+  btn.dataset.busy = '1';
+  const originalHTML = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="9" stroke-opacity="0.3"/><path d="M21 12a9 9 0 0 0-9-9"/></svg><span class="stack">Собираю скелет…<small>step_1_build.py</small></span>`;
+  toast(`Шаг 1: запускаю build для «${summary.display_name}»…`);
+
+  try {
+    const res = await fetch(`/api/montage/${encodeURIComponent(summary.name)}/step/1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ karaoke: 'auto' }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      const detail = (data.stderr || data.stdout || '').slice(-600);
+      console.error('[step1] exit', data.exit_code, '\nstdout:', data.stdout, '\nstderr:', data.stderr);
+      toast(`Шаг 1 упал (exit=${data.exit_code ?? '?'}). См. консоль.`, 'error');
+      alert(`Шаг 1 не завершился:\n\n${data.message || ''}\n\nПоследние строки лога:\n${detail || '— пусто —'}`);
+    } else {
+      console.log('[step1] stdout:\n', data.stdout);
+      toast(`Шаг 1 готов: «${data.project_name}» собран в CapCut.`);
+      // Обновляем summaries, чтобы новый montage_step подтянулся, и
+      // заново рисуем текущую конвейерную страницу — шаг 1 станет «готов».
+      try {
+        state.summaries = await fetchJSON('/api/montage/myths');
+        renderConveyor(summary.name);
+      } catch (e) {
+        console.warn('Не удалось обновить конвейер после шага 1:', e);
+      }
+    }
+  } catch (e) {
+    console.error(e);
+    toast(`Не удалось запустить шаг 1: ${e.message}`, 'error');
+  } finally {
+    btn.dataset.busy = '0';
+    btn.disabled = false;
+    btn.innerHTML = originalHTML;
+  }
+}
+
 // ── Публикация: переключение «опубликован» ─────────────────────────────────
 //
 // Запрос на бэкенд + локальное обновление summary, чтобы UI мгновенно
@@ -913,21 +2835,50 @@ async function togglePublishedFromHub(scenario) {
   const next = !summary.published;
   try {
     const result = await togglePublished(scenario, next);
-    summary.published = !!result.published;
-    summary.published_at = result.published_at;
+    applyPublishResult(summary, result);
     // Если этот же миф открыт в ревью — синхронизируем bottombar
-    if (state.scenario === scenario) {
+    if (state.scenario === scenario || state.scenario === result.name) {
+      state.scenario = result.name;
       state.scenarioPublished = summary.published;
       state.scenarioPublishedAt = summary.published_at;
       refreshBottombarPublishBtn();
     }
     renderHubList();
     renderHubDetail();
+    const moved = result.archived && result.moved && result.moved.length;
     toast(
-      next ? `«${summary.display_name}» — опубликован` : `«${summary.display_name}» — отметка снята`
+      next
+        ? (moved
+            ? `«${summary.display_name}» — опубликован, перенесён в архив`
+            : `«${summary.display_name}» — опубликован`)
+        : `«${summary.display_name}» — отметка снята`
     );
   } catch (e) {
     toast('Не удалось переключить публикацию: ' + e.message, 'error');
+  }
+}
+
+// Применяем ответ /publish к summary: флаг публикации, дата, новое имя
+// после переноса в архив. Имя обновляем СОГЛАСОВАННО с hubSelectedName,
+// чтобы клики дальше не промахивались.
+function applyPublishResult(summary, result) {
+  const oldName = summary.name;
+  summary.published = !!result.published;
+  summary.published_at = result.published_at;
+  if (result.name && result.name !== oldName) {
+    summary.name = result.name;
+    summary.is_archived = !!result.archived;
+    if (state.hubSelectedName === oldName) {
+      state.hubSelectedName = result.name;
+    }
+    // hubSceneCache ключуется по `${mode}::${scenario}` — после переноса
+    // ключи устаревают. Вычищаем, чтобы при следующем открытии ревью
+    // фронт перечитал содержимое по новому имени.
+    Object.keys(state.hubSceneCache || {}).forEach(k => {
+      if (k.endsWith(`::${oldName}`)) delete state.hubSceneCache[k];
+    });
+  } else if (typeof result.archived === 'boolean') {
+    summary.is_archived = result.archived;
   }
 }
 
@@ -955,6 +2906,13 @@ function refreshBottombarPublishBtn() {
   const btn = $('publish-btn');
   if (!btn) return;
   const label = $('publish-label');
+  // Часть сериала: кнопка работает (ставит флаг published), но без
+  // переноса в архив — discovery 2-уровневое, архив серий не поддержан.
+  const series = isSeries(state.scenario);
+  btn.disabled = false;
+  btn.title = series
+    ? 'Пометить часть сериала опубликованной (без переноса в архив)'
+    : 'Пометить миф опубликованным — папка переедет в content/архив/';
   if (state.scenarioPublished) {
     btn.classList.add('is-on');
     if (label) {
@@ -974,14 +2932,26 @@ async function togglePublishedFromBottombar() {
     const result = await togglePublished(state.scenario, next);
     state.scenarioPublished = !!result.published;
     state.scenarioPublishedAt = result.published_at || null;
-    refreshBottombarPublishBtn();
-    // Синхронизируем summary, чтобы хаб тоже был актуален при возврате
+    // Бэкенд при on=true мог перенести миф в архив — имя сценария
+    // поменялось. Обновляем активный scenario, summary и URL-хэш.
     const summary = state.summaries.find(s => s.name === state.scenario);
-    if (summary) {
-      summary.published = state.scenarioPublished;
-      summary.published_at = state.scenarioPublishedAt;
+    if (summary) applyPublishResult(summary, result);
+    if (result.name && result.name !== state.scenario) {
+      state.scenario = result.name;
+      // Пересобираем hash текущей записи через writeHash — он сам делает
+      // encodeURIComponent и НЕ создаёт новую history-запись (это та же
+      // сцена под новым адресом). F5 на новом URL откроет переехавший миф.
+      const parts = ['review', state.mode || 'voice', result.name];
+      if (state.activeSceneBase) parts.push(state.activeSceneBase);
+      writeHash(parts);
     }
-    toast(next ? 'миф помечен опубликованным' : 'отметка снята');
+    refreshBottombarPublishBtn();
+    const moved = result.archived && result.moved && result.moved.length;
+    toast(
+      next
+        ? (moved ? 'миф опубликован · перенесён в архив' : 'миф помечен опубликованным')
+        : 'отметка снята'
+    );
   } catch (e) {
     toast('Не удалось переключить публикацию: ' + e.message, 'error');
   }
@@ -1069,7 +3039,14 @@ function escapeAttr(s) {
 
 async function loadScenario(scenario, targetSceneBase = null) {
   state.scenario = scenario;
-  scenarioTitle.textContent = scenario.replace(/_/g, ' ');
+  // Для одиночных мифов имя = display_name. Для частей сериала id
+  // содержит слеш («От Хаоса до Олимпа/часть_01_Хаос»), а в шапке
+  // показываем красивое «От Хаоса до Олимпа — Ч.01 Хаос» из summary.
+  const sum = (state.summaries || []).find(s => s.name === scenario);
+  const titleText = sum && sum.display_name
+    ? sum.display_name
+    : scenario.replace(/_/g, ' ');
+  scenarioTitle.textContent = titleText;
   // Сразу пишем hash — даже если fetchJSON упадёт, пользователь увидит URL
   // и сможет поделиться/перезагрузить и попасть куда нужно.
   writeHash(['review', state.mode, scenario, ...(targetSceneBase ? [targetSceneBase] : [])]);
@@ -1404,16 +3381,18 @@ function renderAudioCard(scene, variant) {
     isApproved ? 'approved' : '',
     isChosen ? 'chosen' : '',
   ].filter(Boolean).join(' ');
-  const audioPath = (variant.path || variant.filename)
-    .split('/')
-    .map(encodeURIComponent)
-    .join('/');
+  // Путь к mp3 относительно voiceover/audio/. Передаём query-параметром,
+  // потому что бэкенд-эндпоинт `/audio/<scenario>` ожидает `?path=<file>`.
+  // Раньше путь был в URL-сегменте, но из-за scenario со слешем
+  // («От Хаоса до Олимпа/часть_01_Хаос») werkzeug-роутинг ломался — два
+  // <path:>-параметра подряд резолвились неоднозначно.
+  const audioPath = variant.path || variant.filename;
   // Cache-buster: после перегенерации mp3 имя файла не меняется, но
   // контент другой — без query-параметра браузер отдаёт старую озвучку
   // из HTTP-кеша. size_kb меняется между разными генерациями, поэтому
   // служит стабильным хешем содержимого.
-  const cacheKey = variant.size_kb != null ? `?v=${variant.size_kb}` : '';
-  const audioUrl = `/audio/${encodeURIComponent(state.scenario)}/${audioPath}${cacheKey}`;
+  const cacheKey = variant.size_kb != null ? `&v=${variant.size_kb}` : '';
+  const audioUrl = `/audio/${encodeURIComponent(state.scenario)}?path=${encodeURIComponent(audioPath)}${cacheKey}`;
   const btnLabel = isApproved
     ? '★ Одобрено'
     : isChosen ? '✓ Выбрано' : 'Выбрать';
@@ -1444,7 +3423,9 @@ function renderImageCard(scene, variant) {
     'variant-card', 'is-image',
     isChosen ? 'chosen' : '',
   ].filter(Boolean).join(' ');
-  const imgUrl = `/image/${encodeURIComponent(state.scenario)}/${encodeURIComponent(scene.base)}/${encodeURIComponent(variant.filename)}`;
+  // Картинки через query — иначе для частей сериала со слешем в scenario
+  // werkzeug-роутинг ломается (два path-сегмента после <path:scenario>).
+  const imgUrl = `/image/${encodeURIComponent(state.scenario)}?scene=${encodeURIComponent(scene.base)}&file=${encodeURIComponent(variant.filename)}`;
   const btnLabel = isChosen ? '✓ Выбрано' : 'Выбрать';
   return `
     <div class="${classes}" data-base="${scene.base}" data-variant="${variant.variant}">
@@ -1545,14 +3526,16 @@ function extractApprovedBasename(path) {
 function videoUrl(filename) {
   // Cache-buster по имени — после регенерации Veo может перезаписать
   // scene_NN_v1.mp4 новым файлом, query-параметр обходит HTTP-кеш.
+  // Файл через ?file= — иначе для частей сериала со слешем в scenario
+  // werkzeug сломается на двух path-сегментах подряд.
   const sc = encodeURIComponent(state.scenario);
-  return `/video/${sc}/${encodeURIComponent(filename)}?t=${Date.now()}`;
+  return `/video/${sc}?file=${encodeURIComponent(filename)}&t=${Date.now()}`;
 }
 
 function videoThumbUrl(approvedPath) {
   const fname = extractApprovedBasename(approvedPath);
   if (!fname) return '';
-  return `/video-thumb/${encodeURIComponent(state.scenario)}/${encodeURIComponent(fname)}`;
+  return `/video-thumb/${encodeURIComponent(state.scenario)}?file=${encodeURIComponent(fname)}`;
 }
 
 function formatSoundsList(sounds) {
@@ -2158,17 +4141,111 @@ function speedControlHtml() {
   `;
 }
 
+// ── CosyVoice variants count (persisted UI setting) ───────────────────────
+//
+// Раньше число вариантов на предложение было захардкожено (10). Теперь
+// пользователь может выбрать в модалке «Озвучить весь миф?». Меньше
+// вариантов = быстрее, но меньше выбора при ревью.
+const COSY_VARIANTS_KEY = 'cosyVoiceVariants';
+const COSY_VARIANTS_DEFAULT = 10;
+const COSY_VARIANTS_MIN = 1;
+const COSY_VARIANTS_MAX = 20;
+
+function getCosyVariants() {
+  const raw = localStorage.getItem(COSY_VARIANTS_KEY);
+  if (raw === null) return COSY_VARIANTS_DEFAULT;
+  const v = parseInt(raw, 10);
+  if (!Number.isFinite(v) || v < 1) return COSY_VARIANTS_DEFAULT;
+  return Math.min(COSY_VARIANTS_MAX, Math.max(COSY_VARIANTS_MIN, v));
+}
+
+function setCosyVariants(value) {
+  const num = parseInt(value, 10);
+  if (!Number.isFinite(num)) return;
+  const clamped = Math.min(COSY_VARIANTS_MAX, Math.max(COSY_VARIANTS_MIN, num));
+  localStorage.setItem(COSY_VARIANTS_KEY, String(clamped));
+}
+window.setCosyVariants = setCosyVariants;
+
+function variantsControlHtml() {
+  const v = getCosyVariants();
+  return `
+    <div class="mb-stat">
+      <span class="mb-stat-label">Вариантов на предложение</span>
+      <input type="number"
+             class="mb-speed-input"
+             id="cosy-variants-input"
+             min="${COSY_VARIANTS_MIN}"
+             max="${COSY_VARIANTS_MAX}"
+             step="1"
+             value="${v}"
+             oninput="window.setCosyVariants(this.value)" />
+    </div>
+  `;
+}
+
+// ── CosyVoice voice selector (persisted UI setting) ──────────────────────
+//
+// Голос клонируется из assets/TTS/<voice>/{TTS.mp3,TTS.txt}. На фронте
+// — короткий список с человеческими лейблами; в backend летит ASCII-id.
+// Если в /api/cosyvoice-voices появится новый — достаточно добавить запись
+// в COSY_VOICES здесь и в COSY_VOICES в webapp/app.py.
+const COSY_VOICES = [
+  { id: 'max',     label: 'Макс Энергичный' },
+  { id: 'burunov', label: 'Сергей Бурунов'   },
+];
+const COSY_VOICE_KEY = 'cosyVoice';
+const COSY_VOICE_DEFAULT = 'max';
+
+function getCosyVoice() {
+  const raw = localStorage.getItem(COSY_VOICE_KEY);
+  if (raw && COSY_VOICES.some(v => v.id === raw)) return raw;
+  return COSY_VOICE_DEFAULT;
+}
+
+function setCosyVoice(value) {
+  if (!COSY_VOICES.some(v => v.id === value)) return;
+  localStorage.setItem(COSY_VOICE_KEY, value);
+}
+window.setCosyVoice = setCosyVoice;
+
+function cosyVoiceLabel(id) {
+  const v = COSY_VOICES.find(x => x.id === id);
+  return v ? v.label : id;
+}
+
+function voiceControlHtml() {
+  const cur = getCosyVoice();
+  const options = COSY_VOICES.map(v =>
+    `<option value="${v.id}" ${v.id === cur ? 'selected' : ''}>${v.label}</option>`
+  ).join('');
+  return `
+    <div class="mb-stat">
+      <span class="mb-stat-label">Голос</span>
+      <select id="cosy-voice-input"
+              onchange="window.setCosyVoice(this.value)"
+              style="
+                background: var(--bg-panel);
+                color: var(--text);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                padding: 4px 8px;
+                font-family: var(--font-sans);
+                font-size: 0.88rem;
+              ">${options}</select>
+    </div>
+  `;
+}
+
 async function onRegenerate(base) {
   const isImage = state.mode === 'image';
 
   // Voice-режим: CosyVoice3 zero-shot c клонированием голоса.
-  // Параметры: 10 вариантов, скорость берётся из getCosySpeed() (UI-input),
-  // prompt-wav = content/Ящик Пандоры/TTS.mp3, prompt-text = TTS.txt.
+  // Параметры: variants/speed/voice редактируются в модалке (UI-input в
+  // localStorage), prompt-wav/txt подбирается backend'ом по voice-id из
+  // assets/TTS/<voice>/{TTS.mp3,TTS.txt}.
   const cosyParams = {
     model: 'Fun-CosyVoice3-0.5B',
-    variants: 10,
-    promptWav: 'content/Ящик Пандоры/TTS.mp3',
-    promptTxt: 'content/Ящик Пандоры/TTS.txt',
   };
 
   const cosyBody = `
@@ -2176,12 +4253,12 @@ async function onRegenerate(base) {
     <b>${cosyParams.model}</b>.
     <div class="mb-stats" style="margin-top:12px">
       <div class="mb-stat"><span class="mb-stat-label">Модель</span><span class="mb-stat-num">CosyVoice3</span></div>
-      <div class="mb-stat"><span class="mb-stat-label">Вариантов</span><span class="mb-stat-num">${cosyParams.variants}</span></div>
+      ${voiceControlHtml()}
+      ${variantsControlHtml()}
       ${speedControlHtml()}
     </div>
     <div class="mb-note" style="margin-top:10px">
-      Клонирование голоса из <code>${escapeHtml(cosyParams.promptWav)}</code>,
-      транскрипт <code>${escapeHtml(cosyParams.promptTxt)}</code>.
+      Клонирование голоса из <code>assets/TTS/&lt;голос&gt;/TTS.mp3</code>.
       Варианты сгенерируются асинхронно — UI не блокируется.
     </div>
   `;
@@ -2204,19 +4281,24 @@ async function onRegenerate(base) {
   stopAudio();
 
   try {
-    // Скорость берём из localStorage в момент клика по «Запустить» — модалка
-    // успела сохранить пользовательский ввод через oninput.
+    // Скорость + кол-во вариантов + голос берём из localStorage в момент клика
+    // по «Запустить» — модалка успела сохранить пользовательский ввод через
+    // oninput/onchange.
     const chosenSpeed = isImage ? null : getCosySpeed();
-    const body = isImage ? { base } : { base, speed: chosenSpeed };
+    const chosenVariants = isImage ? null : getCosyVariants();
+    const chosenVoice = isImage ? null : getCosyVoice();
+    const body = isImage
+      ? { base }
+      : { base, speed: chosenSpeed, variants: chosenVariants, voice: chosenVoice };
     const res = await postJSON(api().regen(state.scenario), body);
 
-    // В voice-режиме выводим параметры озвучки уведомлением (как попросил пользователь).
+    // В voice-режиме выводим параметры озвучки уведомлением.
     if (!isImage) {
       const parts = [
         `Модель: ${res.model || cosyParams.model}`,
-        `Вариантов: ${res.variants ?? cosyParams.variants}`,
+        `Голос: ${res.voice_label || cosyVoiceLabel(chosenVoice)}`,
+        `Вариантов: ${res.variants ?? chosenVariants}`,
         `Скорость: ${res.speed ?? chosenSpeed}`,
-        `Prompt: ${res.prompt_wav || cosyParams.promptWav}`,
       ];
       if (res.pid) parts.push(`PID: ${res.pid}`);
       toast('CosyVoice 3 запущен · ' + parts.join(' · '), 'success');
@@ -2241,10 +4323,11 @@ async function onRegenerate(base) {
     // действия сразу отобразил состояние «идёт перегенерация».
     if (!isImage) {
       startCosyProgress(base, {
-        requested: res.variants ?? cosyParams.variants,
+        requested: res.variants ?? chosenVariants,
         model: res.model || cosyParams.model,
         speed: res.speed ?? chosenSpeed,
-        promptWav: res.prompt_wav || cosyParams.promptWav,
+        voiceLabel: res.voice_label || cosyVoiceLabel(chosenVoice),
+        promptWav: res.prompt_wav || `assets/TTS/${cosyVoiceLabel(chosenVoice)}/TTS.mp3`,
       });
     }
 
@@ -2266,10 +4349,12 @@ async function onRegenerate(base) {
 const COSY_DEFAULT_META = {
   model: 'Fun-CosyVoice3-0.5B',
   requested: 10,
-  // Геттер: при resume-е после перезагрузки страницы показываем актуальное
-  // значение из localStorage, а не давно зашитую константу.
+  // Геттеры: при resume-е после перезагрузки страницы показываем актуальные
+  // значения из localStorage, а не давно зашитые константы.
   get speed() { return getCosySpeed(); },
-  promptWav: 'content/Ящик Пандоры/TTS.mp3',
+  get voice() { return getCosyVoice(); },
+  get voiceLabel() { return cosyVoiceLabel(getCosyVoice()); },
+  get promptWav() { return `assets/TTS/<${cosyVoiceLabel(getCosyVoice())}>/TTS.mp3`; },
 };
 
 async function resumeCosyIfActive(base) {
@@ -2402,9 +4487,12 @@ function stopCosyProgress() {
 
 const BATCH_META = {
   model: 'Fun-CosyVoice3-0.5B',
-  variants: 10,
+  // variants — динамический геттер, читается из localStorage через
+  // getCosyVariants() (UI-input в модалке). Раньше было статичное 10.
+  get variants() { return getCosyVariants(); },
   get speed() { return getCosySpeed(); },
-  promptWav: 'content/Ящик Пандоры/TTS.mp3',
+  // promptWav убран: голос выбирается в модалке (см. COSY_VOICES), и
+  // backend сам подбирает assets/TTS/<voice>/{TTS.mp3,TTS.txt}.
 };
 
 // Image-батч работает иначе — один subprocess (imagefx_runner.py --auto),
@@ -2470,12 +4558,13 @@ async function startCosyBatch() {
       одним прогоном — модель грузится <b>один раз</b> на весь батч.
       <div class="mb-stats" style="margin-top:12px">
         <div class="mb-stat"><span class="mb-stat-label">Модель</span><span class="mb-stat-num">${BATCH_META.model}</span></div>
-        <div class="mb-stat"><span class="mb-stat-label">Вариантов на предложение</span><span class="mb-stat-num">${BATCH_META.variants}</span></div>
+        ${voiceControlHtml()}
+        ${variantsControlHtml()}
         ${speedControlHtml()}
       </div>
       <div class="mb-note" style="margin-top:10px">
-        Клон из <code>${BATCH_META.promptWav}</code>.
-        Оценочное время — около <b>${Math.ceil(queue.length * 30 / 60)}</b> мин (без повторных прогревов).
+        Клон из <code>assets/TTS/&lt;голос&gt;/TTS.mp3</code>.
+        Оценочное время — около <b>${Math.ceil(queue.length * 3 * getCosyVariants() / 60)}</b> мин (без повторных прогревов; ~3 сек на вариант).
         Во время работы можно открывать любую уже готовую сцену и ревьюить.
       </div>
     `,
@@ -2487,6 +4576,8 @@ async function startCosyBatch() {
   // уйдёт смотреть другой проект, поллинг этого не заметит.
   const batchScenario = state.scenario;
   const speed = getCosySpeed();
+  const variants = getCosyVariants();
+  const voice = getCosyVoice();
 
   state.cosyBatch = {
     active: true,
@@ -2496,7 +4587,7 @@ async function startCosyBatch() {
     total: queue.length,
     completed: 0,
     produced: 0,
-    requested: BATCH_META.variants,
+    requested: variants,
     startedAt: Date.now(),
     pollTimer: null,
     cancelRequested: false,
@@ -2513,12 +4604,14 @@ async function startCosyBatch() {
     const res = await postJSON(api().cosyBatchStart(batchScenario), {
       bases: queue,
       speed,
-      variants: BATCH_META.variants,
+      variants,
+      voice,
     });
     state.cosyBatch.pid = res.pid;
-    state.cosyBatch.requested = res.variants ?? BATCH_META.variants;
+    state.cosyBatch.requested = res.variants ?? variants;
     toast(
-      `CosyVoice batch · ${queue.length} сцен · скорость ${res.speed ?? speed} · PID ${res.pid}`,
+      `CosyVoice batch · ${cosyVoiceLabel(voice)} · ${queue.length} сцен · ` +
+      `скорость ${res.speed ?? speed} · PID ${res.pid}`,
       'success',
     );
   } catch (e) {
@@ -3232,9 +5325,10 @@ function updateCosyProgress(base, meta, status, flags = {}) {
 
   const metaLine = [
     `модель ${meta.model}`,
+    meta.voiceLabel ? `голос ${meta.voiceLabel}` : null,
     `скорость ${meta.speed}`,
     `prompt ${meta.promptWav}`,
-  ].join(' · ');
+  ].filter(Boolean).join(' · ');
   root.querySelector('.cosy-meta').textContent = metaLine;
 
   const details = root.querySelector('.cosy-log');

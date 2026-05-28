@@ -1,0 +1,492 @@
+"""
+Сборка CapCut-драфта «От Хаоса до Олимпа — Ч.02 Власть Кроноса» через pyCapCut.
+
+Скопировано с build_oh_01.py с подменой путей и структуры сцен:
+20 предложений озвучки → 19 видеошотов. Сцена 001 совмещает хук+титул
+(sent_001 + sent_002) на одном кадре. CTA-сцена 020 держит trailing_pad=1.5.
+
+Использование:
+    python build_oh_02.py                                  # автоопределение папки CapCut
+    python build_oh_02.py --drafts "D:\\...\\com.lveditor.draft"
+    python build_oh_02.py --name "От Хаоса до Олимпа Ч.02 v2"
+    python build_oh_02.py --dry-run                        # только напечатать план таймлайна
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+from typing import List, Optional
+
+# Переключаем stdout/stderr на UTF-8, чтобы print со спецсимволами (→ ⚠ ⏱ ✓)
+# не падал на Windows-консолях с cp1251/cp866. Безопасно для скриптов, не для модулей.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+except (AttributeError, OSError):
+    pass
+
+from scene_structure_oh_02 import SCENES, Scene
+from transitions import resolve as resolve_transition_name, is_long as is_long_transition
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Константы проекта
+# ─────────────────────────────────────────────────────────────────────
+
+WIDTH = 1080
+HEIGHT = 1920
+FPS = 60
+
+US = 1_000_000
+GAP_US = int(2 / FPS * US)
+
+DEFAULT_TRANSITION_US = int(0.60 * US)
+LONG_TRANSITION_US = int(1.20 * US)
+MAX_TRANSITION_RATIO = 0.45
+
+DEFAULT_PROJECT_NAME = "От Хаоса до Олимпа Ч.02 Власть Кроноса"
+
+VOICE_VOLUME = 1.0
+ORIGINAL_CLIP_VOLUME = 0.34   # эталон Персефоны/Тесея
+MUSIC_VOLUME = 0.1348         # эталон Персефоны (тише, чем у Тесея 0.1954)
+WHOOSH_VOLUME = 1.0           # эталон Персефоны
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Пути к ассетам
+# ─────────────────────────────────────────────────────────────────────
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent  # …/BOGI AI/
+MYTH_ROOT = PROJECT_ROOT / "content" / "От Хаоса до Олимпа" / "часть_02_Власть_Кроноса"
+
+SCENES_DIR = MYTH_ROOT / "video"
+AUDIO_DIR = MYTH_ROOT / "voiceover" / "audio" / "approved_sentences"
+STICKERS_DIR = MYTH_ROOT / "images" / "stickers" / "cutout"  # PNG с альфой после cutout_stickers.py
+
+# Общие SFX/музыка для всех мифов — в корневом assets/.
+ASSETS_DIR = PROJECT_ROOT / "assets"
+MUSIC_FILE = ASSETS_DIR / "music" / "Dorian_Concept_-_Hide_CS01_Version_(SkySound.cc).mp3"
+WHOOSH_FILE = ASSETS_DIR / "audio" / "WHOOSH.mp3"
+CRUMPLED_FILE = ASSETS_DIR / "sfx" / "crumpled_paper.mp3"
+
+# CapCut онлайн-SFX, скачанные в кеш (те же файлы, что использовала ч.01).
+# Pac — короткий «дзынь» для popup-стикеров.
+# Mouse click — для UI-метафор (dashboard, alert, system dialog).
+# Coin — 8-битная монета для achievement-stickers.
+CAPCUT_MUSIC_CACHE = Path(os.environ.get("LOCALAPPDATA", "")) / "CapCut" / "User Data" / "Cache" / "music"
+PAC_FILE = CAPCUT_MUSIC_CACHE / "e7a6cec88ef0921b00a416c9bed90074.mp3"
+MOUSE_CLICK_FILE = CAPCUT_MUSIC_CACHE / "d91f21d1c2b6ec21cf77a8d7185bdb47.mp3"
+COIN_FILE = CAPCUT_MUSIC_CACHE / "f4d76f47351109ffb8b5068c2a5dbe71.mp3"
+
+# (path, duration_seconds, volume)
+STICKER_SFX = {
+    "pac": (PAC_FILE, 0.40, 1.0),
+    "mouse": (MOUSE_CLICK_FILE, 0.183333, 0.75),
+    "coin": (COIN_FILE, 0.783333, 0.28),
+}
+
+# Маппинг стикер ↔ видеосцена. Имена scene_NN в файле стикера соответствуют
+# индексу sentence_NNN (с убранным leading-нулём, см. stickers.md), а в
+# STICKER_PLAN указано имя соответствующего mp4-шота в треке main —
+# см. scene_structure_oh_02.py для маппинга sent ↔ scene_NN_v?.mp4.
+#
+# Правило тональности (stickers.md §«Общее правило для ч. 2»): в сценах
+# с тяжёлым сюжетом (брак с сестрой scene_11, пророчество scene_12,
+# поглощение детей scene_13) — quieter SFX «mouse», без триумфальной монеты.
+STICKER_PLAN = [
+    # video shot file, sticker image, x, y, scale, sfx
+    ("scene_04_v1.mp4", "scene_04_adamant_sickle_legendary_weapon_unlock.png",       -0.54, 0.39, 0.245, "coin"),
+    ("scene_05_v1.mp4", "scene_05_overthrow_uranus_poll_results_doodle.png",          0.54, 0.40, 0.245, "mouse"),
+    ("scene_09_v1.mp4", "scene_09_aphrodite_legendary_new_drop_netflix.png",          0.0,  0.43, 0.265, "pac"),
+    ("scene_10_v1.mp4", "scene_10_weather_forecast_sky_dad_crying.png",               0.54, 0.38, 0.245, "mouse"),
+    ("scene_11_v1.mp4", "scene_11_married_status_sister_warning_facebook.png",       -0.54, 0.39, 0.245, "mouse"),
+    ("scene_12_v1.mp4", "scene_12_prophecy_exe_run_admin_dialog.png",                 0.54, 0.40, 0.245, "mouse"),
+    ("scene_13_v1.mp4", "scene_13_kids_absorbed_progress_bar_tracker.png",           -0.54, 0.39, 0.245, "mouse"),
+    ("scene_16_v2.mp4", "scene_16_stealth_mode_gps_hidden_google_maps.png",           0.54, 0.38, 0.245, "mouse"),
+    ("scene_17_v1.mp4", "scene_17_incoming_order_zeus_amazon_delivery.png",          -0.54, 0.40, 0.245, "coin"),
+    ("scene_18_v1.mp4", "scene_18_baby_of_the_year_zeus_achievement.png",             0.0,  0.43, 0.265, "coin"),
+]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Длительность mp3 через mutagen + квантование к кадру.
+# См. CAPCUT.md §7.2 и memory feedback_capcut_frame_snap_robovoice.
+# ─────────────────────────────────────────────────────────────────────
+
+def floor_to_frame_us(us: int, fps: int = FPS) -> int:
+    """Округлить длительность в µs вниз до границы кадра проекта."""
+    frames = (us * fps) // US
+    return (frames * US) // fps
+
+
+def mp3_duration_us(path: Path) -> int:
+    try:
+        from mutagen.mp3 import MP3
+    except ImportError as e:
+        raise SystemExit(
+            "Не установлен mutagen. Поставь зависимости:\n"
+            "  pip install -r requirements.txt"
+        ) from e
+    raw_us = int(MP3(str(path)).info.length * 1_000_000)
+    return floor_to_frame_us(raw_us)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Автоопределение пути к папке CapCut Drafts на Windows
+# ─────────────────────────────────────────────────────────────────────
+
+def autodetect_drafts_folder() -> Optional[Path]:
+    candidates: List[Path] = []
+    local = os.environ.get("LOCALAPPDATA")
+    roaming = os.environ.get("APPDATA")
+    if local:
+        candidates.append(Path(local) / "CapCut" / "User Data" / "Projects" / "com.lveditor.draft")
+    if roaming:
+        candidates.append(Path(roaming) / "JianyingPro" / "User Data" / "Projects" / "com.lveditor.draft")
+        candidates.append(Path(roaming) / "CapCut" / "User Data" / "Projects" / "com.lveditor.draft")
+    for c in candidates:
+        if c.is_dir():
+            return c
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Планирование таймлайна
+# ─────────────────────────────────────────────────────────────────────
+
+class TimelineScene:
+    def __init__(self, scene: Scene, start_us: int):
+        self.scene = scene
+        self.start_us = start_us
+        self.audio_durs_us: List[int] = [
+            mp3_duration_us(AUDIO_DIR / a) for a in scene.audios
+        ]
+        gaps = GAP_US * (len(self.audio_durs_us) - 1) if self.audio_durs_us else 0
+        self.audio_span_us = sum(self.audio_durs_us) + gaps
+        self.duration_us = self.audio_span_us + int(scene.trailing_pad * US)
+
+    @property
+    def end_us(self) -> int:
+        return self.start_us + self.duration_us
+
+
+def plan_timeline(scenes: List[Scene]) -> List[TimelineScene]:
+    out: List[TimelineScene] = []
+    cursor = 0
+    for s in scenes:
+        ts = TimelineScene(s, cursor)
+        out.append(ts)
+        cursor += ts.duration_us
+    return out
+
+
+def print_plan(plan: List[TimelineScene]) -> None:
+    print(f"{'sid':<6} {'start':>7} {'dur':>7} {'audio':>7} {'trans':<14} text")
+    print("-" * 72)
+    for ts in plan:
+        trans = ts.scene.transition_after or ""
+        text_preview = (ts.scene.text or "").replace("\n", " ")[:30]
+        start_s = ts.start_us / US
+        dur_s = ts.duration_us / US
+        audio_s = ts.audio_span_us / US
+        print(
+            f"{ts.scene.sid:<6} "
+            f"{start_s:7.2f} {dur_s:7.2f} {audio_s:7.2f} "
+            f"{trans:<14} {text_preview}"
+        )
+    if plan:
+        total = plan[-1].end_us / US
+        print("-" * 72)
+        print(f"Всего: {total:.2f} сек ({total/60:.2f} мин)")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Переходы
+# ─────────────────────────────────────────────────────────────────────
+
+def base_transition_duration_us(name: Optional[str]) -> int:
+    if name and is_long_transition(name):
+        return LONG_TRANSITION_US
+    return DEFAULT_TRANSITION_US
+
+
+def clamped_transition_duration_us(name: Optional[str], prev_us: int, next_us: int) -> int:
+    wanted = base_transition_duration_us(name)
+    cap = int(min(prev_us, next_us) * MAX_TRANSITION_RATIO)
+    return max(150_000, min(wanted, cap))
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Основная сборка
+# ─────────────────────────────────────────────────────────────────────
+
+def build_draft(drafts_folder: Path, project_name: str) -> Path:
+    try:
+        import pycapcut as cc  # type: ignore
+        from pycapcut import trange, TransitionType, TextStyle, ClipSettings  # type: ignore
+    except ImportError as e:
+        raise SystemExit(
+            "Не установлен pycapcut. Поставь зависимости:\n"
+            "  pip install -r requirements.txt"
+        ) from e
+
+    plan = plan_timeline(SCENES)
+
+    print(f"CapCut drafts folder: {drafts_folder}")
+    print(f"Создаём проект:       {project_name} ({WIDTH}x{HEIGHT}, {FPS} fps)")
+    print_plan(plan)
+
+    folder = cc.DraftFolder(str(drafts_folder))
+    script = folder.create_draft(project_name, WIDTH, HEIGHT, fps=FPS, allow_replace=True)
+
+    # Треки (порядок = слои снизу вверх)
+    script.add_track(cc.TrackType.video, track_name="main")
+    script.add_track(cc.TrackType.video, track_name="stickers")
+    script.add_track(cc.TrackType.audio, track_name="voice")
+    script.add_track(cc.TrackType.audio, track_name="music")
+    script.add_track(cc.TrackType.audio, track_name="sfx")
+    script.add_track(cc.TrackType.audio, track_name="sticker_sfx")
+    script.add_track(cc.TrackType.text,  track_name="subtitles")
+
+    # ── Видеосегменты ──
+    # Если видео-материал короче нужной длительности сцены — растягиваем speed-ом
+    # (замедление). Это нужно, потому что Veo генерит 4-сек ролики, а часть
+    # сцен длиннее. pycapcut автоматически посчитает speed как
+    # source.duration / target.duration, если передать оба timerange.
+    scene_last_shot = {}
+    shot_ranges: dict[str, tuple[int, int]] = {}
+    video_segments = []
+    for ts in plan:
+        n = len(ts.scene.videos)
+        base = ts.duration_us // n
+        remainder = ts.duration_us - base * n
+        cur = ts.start_us
+        for i, shot in enumerate(ts.scene.videos):
+            shot_dur_us = base + (remainder if i == n - 1 else 0)
+            file_path = str(SCENES_DIR / shot.file)
+            mat = cc.VideoMaterial(file_path)
+            mat_dur_us = mat.duration
+            kwargs = {}
+            start_from_us = int(shot.start_from * US)
+            if shot_dur_us > (mat_dur_us - start_from_us):
+                # Материал короче нужного — отдаём весь доступный кусок,
+                # pycapcut замедлит speed-ом до длины shot_dur_us.
+                available = max(1, mat_dur_us - start_from_us)
+                kwargs["source_timerange"] = trange(start_from_us, available)
+                stretch = shot_dur_us / available
+                print(f"  ~ {shot.file} short ({available/US:.2f}s) -> stretch to {shot_dur_us/US:.2f}s (speed={1/stretch:.2f}x)")
+            elif start_from_us > 0:
+                kwargs["source_timerange"] = trange(start_from_us, shot_dur_us)
+            vseg = cc.VideoSegment(
+                mat,
+                trange(cur, shot_dur_us),
+                volume=(ORIGINAL_CLIP_VOLUME if shot.muted else 1.0),
+                **kwargs,
+            )
+            video_segments.append(vseg)
+            shot_ranges[shot.file] = (cur, shot_dur_us)
+            if i == n - 1:
+                scene_last_shot[ts.scene.sid] = vseg
+            cur += shot_dur_us
+
+    # Навешиваем переходы
+    transition_dur_by_sid: dict = {}
+    for idx, ts in enumerate(plan):
+        if idx == len(plan) - 1:
+            break
+        if not ts.scene.transition_after:
+            continue
+        vseg = scene_last_shot.get(ts.scene.sid)
+        if vseg is None:
+            continue
+        resolved = resolve_transition_name(ts.scene.transition_after, TransitionType)
+        if resolved is None:
+            print(f"  ⚠ переход {ts.scene.transition_after} не найден в TransitionType (сцена {ts.scene.sid})")
+            continue
+        dur_us = clamped_transition_duration_us(
+            ts.scene.transition_after, ts.duration_us, plan[idx + 1].duration_us
+        )
+        transition_dur_by_sid[ts.scene.sid] = dur_us
+        try:
+            vseg.add_transition(resolved, duration=dur_us)
+            print(f"  → {ts.scene.sid:<6} {ts.scene.transition_after:<14} {dur_us/US:.2f}s")
+        except Exception as ex:
+            print(f"  ⚠ переход {ts.scene.transition_after} на сцене {ts.scene.sid} не применился: {ex}")
+
+    # Вставляем видео в трек
+    for vseg in video_segments:
+        script.add_segment(vseg, "main")
+
+    # ── Meme/image-overlay стикеры + короткий SFX на появление ──
+    for shot_file, sticker_file, x, y, scale, sfx_key in STICKER_PLAN:
+        sticker_path = STICKERS_DIR / sticker_file
+        if not sticker_path.is_file():
+            print(f"  WARN стикер пропущен (нет файла): {sticker_file}")
+            continue
+        if shot_file not in shot_ranges:
+            print(f"  WARN стикер пропущен (нет шота): {sticker_file} -> {shot_file}")
+            continue
+        shot_start_us, shot_dur_us = shot_ranges[shot_file]
+        # Стикер длится 1.5с или вся сцена если она короче, минимум 0.75с,
+        # старт — через 0.25с после старта шота (или раньше, если шот короткий).
+        dur_us = min(int(1.5 * US), max(int(0.75 * US), shot_dur_us - int(0.1 * US)))
+        start_us = shot_start_us + min(int(0.25 * US), max(0, shot_dur_us - dur_us))
+        sticker_seg = cc.VideoSegment(
+            str(sticker_path),
+            trange(start_us, dur_us),
+            volume=0.0,
+            clip_settings=ClipSettings(
+                scale_x=scale,
+                scale_y=scale,
+                transform_x=x,
+                transform_y=y,
+            ),
+        )
+        script.add_segment(sticker_seg, "stickers")
+
+        sfx_path, sfx_dur_s, sfx_volume = STICKER_SFX.get(sfx_key, (CRUMPLED_FILE, 0.40, 0.7))
+        if not sfx_path.is_file():
+            sfx_path, sfx_dur_s, sfx_volume = CRUMPLED_FILE, 0.40, 0.7
+        if sfx_path.is_file():
+            sfx_dur_us = min(int(sfx_dur_s * US), dur_us)
+            script.add_segment(
+                cc.AudioSegment(str(sfx_path), trange(start_us, sfx_dur_us), volume=sfx_volume),
+                "sticker_sfx",
+            )
+        print(f"  + sticker {sticker_file[:50]:<50} @ {start_us/US:.2f}s [{sfx_key}]")
+
+    # ── Озвучка ──
+    for ts in plan:
+        local_us = 0
+        for a_file, a_dur_us in zip(ts.scene.audios, ts.audio_durs_us):
+            aseg = cc.AudioSegment(
+                str(AUDIO_DIR / a_file),
+                trange(ts.start_us + local_us, a_dur_us),
+                volume=VOICE_VOLUME,
+            )
+            script.add_segment(aseg, "voice")
+            local_us += a_dur_us + GAP_US
+
+    # ── Фоновая музыка ──
+    total_us = plan[-1].end_us
+    if MUSIC_FILE.is_file():
+        music_seg = cc.AudioSegment(
+            str(MUSIC_FILE),
+            trange(0, total_us),
+            volume=MUSIC_VOLUME,
+        )
+        try:
+            # фейд-аут 2.9 с в самом конце (эталон Персефоны)
+            fade_us = int(2.9 * US)
+            music_seg.add_keyframe(max(0, total_us - fade_us), MUSIC_VOLUME)
+            music_seg.add_keyframe(total_us, 0.0)
+        except Exception as ex:
+            print(f"  ⚠ фейд музыки не применился: {ex}")
+        script.add_segment(music_seg, "music")
+    else:
+        print(f"  ⚠ не нашёл {MUSIC_FILE}, музыку пропускаю")
+
+    # ── Whoosh-SFX на slide-переходах (placeholder; enrich-скрипт расставит детально) ──
+    whoosh_dur_us = int(0.6 * US)
+    slide_aliases = {"сдвиг влево", "сдвиг вправо", "сдвиг вверх", "сдвиг вниз", "slide_left", "slide_right"}
+    if WHOOSH_FILE.is_file():
+        for ts in plan[:-1]:
+            if ts.scene.transition_after in slide_aliases:
+                whoosh_start_us = ts.end_us - transition_dur_by_sid.get(ts.scene.sid, DEFAULT_TRANSITION_US) // 2
+                wseg = cc.AudioSegment(
+                    str(WHOOSH_FILE),
+                    trange(whoosh_start_us, whoosh_dur_us),
+                    volume=WHOOSH_VOLUME,
+                )
+                script.add_segment(wseg, "sfx")
+
+    # ── Субтитры ──
+    # Только интро-сегмент (сцена 001 = хук+титул) как шаблон стиля для karaoke-скрипта.
+    # Остальные SCENE_TEXTS не добавляем — их перекроет karaoke_oh_02.py.
+    intro_ts = next((ts for ts in plan if ts.scene.sid == "001"), None)
+    if intro_ts is not None:
+        # Шаблон-карточка ложится на временной диапазон ТИТУЛА (sentence_002), а не на весь хук.
+        # Начало карточки = start сцены + длительность хука + GAP, конец = конец титула.
+        hook_dur_us = intro_ts.audio_durs_us[0] if intro_ts.audio_durs_us else 0
+        title_dur_us = intro_ts.audio_durs_us[1] if len(intro_ts.audio_durs_us) > 1 else intro_ts.audio_span_us
+        title_start_us = intro_ts.start_us + hook_dur_us + GAP_US
+        tseg = cc.TextSegment(
+            "От Хаоса до Олимпа\nЧасть 2",
+            trange(title_start_us, title_dur_us),
+            style=TextStyle(
+                size=14.0,
+                color=(1.0, 1.0, 1.0),
+                align=1,
+                auto_wrapping=True,
+                max_line_width=0.85,
+            ),
+            clip_settings=ClipSettings(
+                transform_x=0.0,
+                transform_y=0.0,
+            ),
+        )
+        script.add_segment(tseg, "subtitles")
+
+    script.save()
+
+    draft_path = drafts_folder / project_name
+    return draft_path
+
+
+# ─────────────────────────────────────────────────────────────────────
+# CLI
+# ─────────────────────────────────────────────────────────────────────
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="Собрать CapCut-драфт «От Хаоса до Олимпа Ч.02 Власть Кроноса» через pyCapCut.")
+    p.add_argument("--drafts", help="Путь к CapCut\\User Data\\Projects\\com.lveditor.draft. По умолчанию — автоопределение.")
+    p.add_argument("--name", default=DEFAULT_PROJECT_NAME, help="Имя проекта в CapCut.")
+    p.add_argument("--dry-run", action="store_true", help="Только напечатать план таймлайна, ничего не создавать.")
+    args = p.parse_args()
+
+    missing: List[Path] = []
+    for s in SCENES:
+        for a in s.audios:
+            if not (AUDIO_DIR / a).is_file():
+                missing.append(AUDIO_DIR / a)
+        for v in s.videos:
+            if not (SCENES_DIR / v.file).is_file():
+                missing.append(SCENES_DIR / v.file)
+    if missing:
+        print("Не хватает ассетов:")
+        for m in missing:
+            print(f"  - {m}")
+        return 1
+
+    if args.dry_run:
+        plan = plan_timeline(SCENES)
+        print_plan(plan)
+        return 0
+
+    drafts = Path(args.drafts) if args.drafts else autodetect_drafts_folder()
+    if drafts is None or not drafts.is_dir():
+        print(
+            "Не нашёл папку CapCut drafts. Укажи её вручную, например:\n"
+            "  python build_oh_02.py --drafts "
+            '"%LOCALAPPDATA%\\CapCut\\User Data\\Projects\\com.lveditor.draft"'
+        )
+        return 1
+
+    try:
+        draft_path = build_draft(drafts, args.name)
+    except Exception as e:
+        print(f"Ошибка сборки: {e}")
+        raise
+
+    print()
+    print("✓ Драфт собран.")
+    print(f"  Папка драфта: {draft_path}")
+    print("  Открой CapCut → Drafts → выбери проект → правь / экспортируй.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

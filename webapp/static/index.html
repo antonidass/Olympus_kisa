@@ -68,6 +68,30 @@
       <h1 class="chooser-title">Что будем <em>проверять</em>?</h1>
       <p class="chooser-sub">Выберите режим — озвучка из ElevenLabs, изображения из ImageFX или клипы Veo.</p>
 
+      <!-- ─── Индикатор CosyVoice-сервера + кнопки управления ───────────
+           Сервер — отдельный долгоживущий процесс на 5001 (демон-режим,
+           без своего окна). Держит модель Fun-CosyVoice3-0.5B в памяти
+           и обслуживает webapp по HTTP. Без него работает только
+           ElevenLabs-озвучка (которая идёт в браузере через Playwright). -->
+      <div class="cosy-server-panel" id="cosy-server-panel" data-state="unknown">
+        <div class="cosy-server-dot" aria-hidden="true"></div>
+        <div class="cosy-server-text">
+          <div class="cosy-server-title">CosyVoice-сервер</div>
+          <div class="cosy-server-sub" id="cosy-server-sub">проверяю…</div>
+        </div>
+        <div class="cosy-server-actions">
+          <button class="cosy-server-btn cosy-server-btn-ghost" id="cosy-server-log-btn" type="button" hidden title="Показать последние строки лог-файла">
+            логи
+          </button>
+          <button class="cosy-server-btn cosy-server-btn-ghost" id="cosy-server-stop-btn" type="button" hidden title="Остановить фоновый процесс сервера">
+            стоп
+          </button>
+          <button class="cosy-server-btn" id="cosy-server-btn" type="button" hidden>
+            Запустить
+          </button>
+        </div>
+      </div>
+
       <div class="chooser-grid">
         <button class="chooser-card" data-mode="voice">
           <div class="chooser-card-icon">
@@ -128,6 +152,34 @@
           </div>
           <div class="chooser-card-arrow">→</div>
         </button>
+
+        <!-- РЕЖИМ 04 · МОНТАЖ (заглушка) ────────────────────────────────
+             Клик пока показывает toast «скоро будет» — реализация
+             4-ступенчатого pipeline'а (скелет → переходы → стикеры →
+             анимация) появится позже. Иконка — мини-таймлайн CapCut:
+             3 дорожки разной длины + playhead. Мятный акцент --mint. -->
+        <button class="chooser-card" data-mode="montage">
+          <span class="chooser-card-new-badge">скоро</span>
+          <div class="chooser-card-icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3">
+              <rect x="3" y="5" width="18" height="3.2" rx="1"/>
+              <rect x="3" y="10.4" width="13" height="3.2" rx="1" fill="currentColor" fill-opacity="0.35" stroke="none"/>
+              <rect x="3" y="15.8" width="9" height="3.2" rx="1"/>
+              <line x1="12" y1="3.5" x2="12" y2="20.5" stroke-width="1.4"/>
+              <circle cx="12" cy="3.5" r="1.2" fill="currentColor" stroke="none"/>
+            </svg>
+          </div>
+          <div class="chooser-card-body">
+            <div class="chooser-card-label">режим 04</div>
+            <div class="chooser-card-title">Монтаж в CapCut</div>
+            <div class="chooser-card-desc">
+              Собрать готовое видео из аппрув-материала: 4-ступенчатый
+              конвейер — скелет, переходы, стикеры, анимация.
+            </div>
+            <div class="chooser-card-meta" id="chooser-montage-meta">в разработке</div>
+          </div>
+          <div class="chooser-card-arrow">→</div>
+        </button>
       </div>
     </div>
   </div>
@@ -145,12 +197,19 @@
           <div class="hub-list-count" id="hub-count">—</div>
         </div>
       </div>
-      <div class="hub-list-filter">
-        <button class="hub-chip active" data-filter="all">все</button>
-        <button class="hub-chip" data-filter="in_progress">в работе</button>
-        <button class="hub-chip" data-filter="ready">готовы</button>
-        <button class="hub-chip" data-filter="new">новые</button>
-        <button class="hub-chip published-chip" data-filter="published">опубл.</button>
+      <div class="hub-segments" id="hub-segments">
+        <button class="hub-seg active" data-filter="active" type="button">
+          <span class="hub-seg-n" data-count="active">—</span>
+          <span class="hub-seg-l">в работе</span>
+        </button>
+        <button class="hub-seg archive" data-filter="archive" type="button">
+          <span class="hub-seg-n" data-count="archive">—</span>
+          <span class="hub-seg-l">архив</span>
+        </button>
+        <button class="hub-seg" data-filter="all" type="button">
+          <span class="hub-seg-n" data-count="all">—</span>
+          <span class="hub-seg-l">все</span>
+        </button>
       </div>
       <div class="hub-list-items" id="hub-list-items">
         <div class="hub-list-loading">загрузка…</div>
@@ -161,6 +220,13 @@
       <div class="hub-empty">Выберите миф слева</div>
     </main>
   </div>
+
+  <!-- CONVEYOR VIEW (монтажный pipeline на выбранном мифе) ───────────────
+       Самодостаточная страница с мятным акцентом: рендерится JS из
+       renderConveyor(). Топбар и боттомбар приложения скрыты в этом
+       режиме (см. body[data-view="conveyor"] в style.css), у конвейера
+       свой внутренний хедер. -->
+  <div class="conveyor-container" id="conveyor-container"></div>
 
   <!-- REVIEW VIEW (текущий интерфейс ревью) -->
   <div class="review-container">

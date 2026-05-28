@@ -58,9 +58,14 @@ CONTENT_DIR = REPO_ROOT / "content"
 COSYVOICE_REPO = REPO_ROOT / "external" / "CosyVoice"
 COSYVOICE_MODEL_DIR = COSYVOICE_REPO / "pretrained_models" / "Fun-CosyVoice3-0.5B"
 
-# Дефолтный prompt для клонирования — указан пользователем для всего проекта.
-DEFAULT_PROMPT_WAV = CONTENT_DIR / "Ящик Пандоры" / "TTS.mp3"
-DEFAULT_PROMPT_TXT = CONTENT_DIR / "Ящик Пандоры" / "TTS.txt"
+# Дефолтный prompt — Макс Энергичный из assets/TTS/Макс/. Раньше дефолт
+# тянулся из content/Ящик Пандоры/, но теперь голоса живут в общем каталоге
+# assets/TTS/<voice>/{TTS.mp3,TTS.txt}, и webapp передаёт runner'у конкретный
+# выбранный голос через --prompt-wav / --prompt-text. Дефолт нужен только для
+# вызовов без флагов.
+DEFAULT_VOICE_DIR = REPO_ROOT / "assets" / "TTS" / "Макс"
+DEFAULT_PROMPT_WAV = DEFAULT_VOICE_DIR / "TTS.mp3"
+DEFAULT_PROMPT_TXT = DEFAULT_VOICE_DIR / "TTS.txt"
 
 DEFAULT_VARIANTS = 10
 DEFAULT_SPEED = 1.1

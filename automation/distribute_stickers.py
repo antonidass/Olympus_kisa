@@ -30,12 +30,18 @@ Distribute Stickers — раскладка ZIP-архива со стикера�
 
 По умолчанию — dry-run: показывает план раскладки и список несопоставленных
 файлов, но ничего не двигает. С `--execute` физически переименовывает.
+
+После успешной раскладки с `--execute` автоматически запускается
+`cutout_stickers.py` и обрезает фон у разложенных стикеров (PNG с альфой
+ложатся в `stickers/cutout/`) — без этого CapCut показывает белую рамку
+вокруг стикера. Отключить можно через `--no-cutout`.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import re
 import shutil
 import sys
@@ -89,7 +95,9 @@ def _tokenize(s: str) -> list[str]:
 def parse_stickers_md(path: Path) -> dict[int, Scene]:
     """Извлекает первую фразу `**Промпт:**` для каждой `## Сцена N`."""
     text = path.read_text(encoding="utf-8")
-    parts = re.split(r"^## Сцена (\d+)[^\n]*\n", text, flags=re.MULTILINE)
+    # Принимаем оба формата заголовков: `## Сцена 1` и `## Сцена scene_01`
+    # (stickers.md часто использует `scene_NN` префикс).
+    parts = re.split(r"^## Сцена (?:scene_)?(\d+)[^\n]*\n", text, flags=re.MULTILINE)
     # parts = [preamble, '1', body1, '2', body2, ...]
 
     scenes: dict[int, Scene] = {}
@@ -376,6 +384,17 @@ def main() -> int:
         metavar="PREFIX=N",
         help="Ручной override: префикс файла → номер сцены. Можно повторять.",
     )
+    parser.add_argument(
+        "--no-cutout",
+        action="store_true",
+        help="Не запускать cutout_stickers.py после --execute. По умолчанию "
+             "сразу обрезается фон у разложенных стикеров (PNG с альфой → cutout/).",
+    )
+    parser.add_argument(
+        "--cutout-model",
+        default="u2net",
+        help="Модель rembg для cutout-этапа (u2net по умолчанию; см. cutout_stickers.py).",
+    )
     args = parser.parse_args()
 
     input_path = Path(args.input).expanduser()
@@ -534,6 +553,31 @@ def main() -> int:
             f"уже лежали на месте {already_placed}, "
             f"дубликатов пропущено {skipped_duplicates}."
         )
+
+        if args.no_cutout:
+            print()
+            print("Пропускаю cutout (--no-cutout). Запусти отдельно:")
+            print(f'  python automation/cutout_stickers.py "{target_dir}" --execute')
+            return 0
+
+        # Автоматическая обрезка фона: PNG с альфой в stickers/cutout/.
+        # Без этого CapCut покажет белую/цветную рамку вокруг стикера.
+        print()
+        print("─── Обрезка фона (cutout_stickers) ─────────────────────────")
+        import subprocess
+        cutout_script = Path(__file__).resolve().parent / "cutout_stickers.py"
+        env = os.environ.copy()
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        rc = subprocess.call(
+            [sys.executable, str(cutout_script),
+             str(target_dir), "--execute", "--model", args.cutout_model],
+            env=env,
+        )
+        if rc != 0:
+            print(f"WARN cutout_stickers вернул код {rc}. JPG разложены, "
+                  f"но PNG с альфой могли не обновиться — запусти cutout вручную.",
+                  file=sys.stderr)
+            return rc
         return 0
 
     finally:

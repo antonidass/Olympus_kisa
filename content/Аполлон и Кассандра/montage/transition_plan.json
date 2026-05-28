@@ -1,0 +1,99 @@
+{
+  "transitions": [
+    {
+      "index": 0,
+      "effect_id": "6724227717195108867",
+      "duration": 0.8
+    },
+    {
+      "index": 1,
+      "effect_id": "6724227599616184836",
+      "duration": 0.47
+    },
+    {
+      "index": 2,
+      "effect_id": "6724227090872275463",
+      "duration": 0.5
+    },
+    {
+      "index": 3,
+      "effect_id": "6724227330190873100",
+      "duration": 0.5
+    },
+    {
+      "index": 4,
+      "effect_id": "7620344224734629138",
+      "duration": 0.6
+    },
+    {
+      "index": 5,
+      "effect_id": null,
+      "duration": null
+    },
+    {
+      "index": 6,
+      "effect_id": null,
+      "duration": null
+    },
+    {
+      "index": 7,
+      "effect_id": null,
+      "duration": null
+    },
+    {
+      "index": 8,
+      "effect_id": null,
+      "duration": null
+    },
+    {
+      "index": 9,
+      "effect_id": null,
+      "duration": null
+    },
+    {
+      "index": 10,
+      "effect_id": null,
+      "duration": null
+    },
+    {
+      "index": 11,
+      "effect_id": null,
+      "duration": null
+    },
+    {
+      "index": 12,
+      "effect_id": null,
+      "duration": null
+    },
+    {
+      "index": 13,
+      "effect_id": null,
+      "duration": null
+    },
+    {
+      "index": 14,
+      "effect_id": null,
+      "duration": null
+    },
+    {
+      "index": 15,
+      "effect_id": null,
+      "duration": null
+    },
+    {
+      "index": 16,
+      "effect_id": null,
+      "duration": null
+    },
+    {
+      "index": 17,
+      "effect_id": null,
+      "duration": null
+    },
+    {
+      "index": 18,
+      "effect_id": null,
+      "duration": null
+    }
+  ]
+}

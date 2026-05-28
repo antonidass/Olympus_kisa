@@ -1,12 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "BOGI Flow Promptr",
-  "version": "0.3.0",
-  "description": "Помощник для копирования промптов в Google Flow (картинки/стикеры/видео) и импорта вручную скачанных файлов в сценарий.",
-  "permissions": ["sidePanel", "downloads", "storage", "clipboardWrite"],
+  "name": "BOGI Promptr",
+  "version": "0.4.0",
+  "description": "Помощник для копирования промптов и импорта вручную скачанных файлов в content/<миф>/. С Flow НЕ взаимодействует.",
+  "permissions": ["sidePanel", "downloads", "storage", "clipboardWrite", "tabs"],
   "host_permissions": [
-    "http://127.0.0.1:5000/*",
-    "https://labs.google/*"
+    "http://127.0.0.1:5000/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -15,13 +14,6 @@
     "default_path": "sidepanel.html"
   },
   "action": {
-    "default_title": "BOGI Flow Promptr"
-  },
-  "content_scripts": [
-    {
-      "matches": ["https://labs.google/*"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    }
-  ]
+    "default_title": "BOGI Promptr"
+  }
 }

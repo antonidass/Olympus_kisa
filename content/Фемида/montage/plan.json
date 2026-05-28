@@ -1,0 +1,50 @@
+{
+  "shots": {
+    "scene_02": {
+      "start_from": 0.0,
+      "speed_override": null,
+      "variant": "v2"
+    },
+    "scene_03": {
+      "start_from": 0.0,
+      "speed_override": null,
+      "variant": "v2"
+    },
+    "scene_04": {
+      "start_from": 0.0,
+      "speed_override": 0.778,
+      "variant": "v2"
+    },
+    "scene_05": {
+      "start_from": 0.0,
+      "speed_override": null,
+      "variant": "v2"
+    },
+    "scene_06": {
+      "start_from": 0.0,
+      "speed_override": null,
+      "variant": "v2"
+    },
+    "scene_07": {
+      "start_from": 0.0,
+      "speed_override": null,
+      "variant": "v2"
+    },
+    "scene_08": {
+      "start_from": 0.0,
+      "speed_override": null,
+      "variant": "v2"
+    },
+    "scene_09": {
+      "start_from": 0.0,
+      "speed_override": null,
+      "variant": "v2"
+    },
+    "scene_18": {
+      "start_from": 0.0,
+      "speed_override": null,
+      "variant": "v3"
+    }
+  },
+  "version": 1
+}

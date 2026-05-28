@@ -1,1 +1,2 @@
 playwright>=1.47
+rembg[cpu]>=2.0.75  # обрезка фона у стикеров (automation/cutout_stickers.py)

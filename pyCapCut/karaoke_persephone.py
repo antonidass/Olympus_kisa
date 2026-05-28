@@ -169,7 +169,7 @@ KARAOKE_BORDER_WIDTH = 0.08
 
 # Интро: один двухстрочный титр, как в Арахне.
 # Строка 1: "ПЕРСЕФОНА И АИД" (белый), строка 2: "МИФ ЗА МИНУТУ" (бордовый #cb3a3a).
-INTRO_FONT_SIZE = 22.753623962402344    # визуально ~36 в CapCut
+INTRO_FONT_SIZE = 16.0                  # 22.75 → 17 (2026-05-16, перекрывал halftone) → 16 (2026-05-21, всё ещё «давил» на длинных названиях типа «КАЛЛИСТО И АРКАС»)
 INTRO_Y = 0.0                           # центр кадра
 INTRO_COLOR_WHITE = [1.0, 1.0, 1.0]
 INTRO_COLOR_RED = [0.7960784435, 0.2274509817, 0.2274509817]  # #cb3a3a
@@ -1107,8 +1107,12 @@ def main() -> int:
         total_dur = sum(d for _, d, _ in intro_steps) / 1_000_000
         print(f"Интро: {len(intro_steps)} двухстрочный титр на "
               f"{intro_start_us/1_000_000:.2f}–{(intro_start_us + int(total_dur*1_000_000))/1_000_000:.2f}s.")
-        add_keyboard_typing_sfx(draft, intro_steps[0][0], sum(d for _, d, _ in intro_steps))
-        print("SFX интро: Realistic sound effects for typing on keyboards.")
+        # SFX печатной машинки заканчивается ВМЕСТЕ с typewriter-анимацией
+        # (1.666s), а не с концом голосового сегмента — иначе звук тянется
+        # дольше, чем «стрелочка печатания» в кадре. См. CAPCUT.md §5.1.
+        intro_sfx_dur = min(1_666_666, sum(d for _, d, _ in intro_steps))
+        add_keyboard_typing_sfx(draft, intro_steps[0][0], intro_sfx_dur)
+        print(f"SFX интро: Realistic sound effects for typing on keyboards ({intro_sfx_dur/1e6:.2f}s, кончится с анимацией).")
 
     # --- Караоке: исключаем слова, которые попадают внутрь интро
     inserted_words = 0

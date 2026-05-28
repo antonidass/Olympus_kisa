@@ -1,9 +1,15 @@
-# Медиафайлы (генерируемые)
+# Медиафайлы (генерируемые) — одиночные мифы и части сериалов
 content/*/voiceover/audio/
 content/*/images/
 content/*/video/
 content/*/music/
 content/*/final/
+# Сериал: content/<Цикл>/часть_NN_<тема>/...
+content/*/*/voiceover/audio/
+content/*/*/images/
+content/*/*/video/
+content/*/*/music/
+content/*/*/final/
 
 # Ящик Пандоры — старый формат, всё тяжёлое
 content/ящик_пандоры/*.mp4

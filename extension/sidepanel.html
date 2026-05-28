@@ -9,7 +9,16 @@
     <header>
       <div class="title-row">
         <h1>BOGI Promptr</h1>
-        <button id="reload-btn" title="Обновить список сценариев">↻</button>
+        <div class="title-actions">
+          <button id="back-btn" title="Откатить на предыдущую сцену — если по ошибке нажал Copy и хочешь вернуться к незавершённой">↩</button>
+          <button id="reload-btn" title="Обновить список сценариев">↻</button>
+        </div>
+      </div>
+      <div class="row">
+        <select id="generator-select">
+          <option value="flow">Flow (Google)</option>
+          <option value="grok">Grok (xAI)</option>
+        </select>
       </div>
       <div class="row">
         <select id="scenario-select">
@@ -25,10 +34,6 @@
       </div>
       <div class="row status">
         <span id="progress">—</span>
-        <label class="autocopy">
-          <input id="autocopy" type="checkbox" checked />
-          авто-копировать на «Generate»
-        </label>
       </div>
       <div class="row toggles">
         <label class="autocopy">
@@ -42,6 +47,10 @@
         <label class="autocopy">
           <input id="download-videos" type="checkbox" checked />
           скачать видео
+        </label>
+        <label class="autocopy" title="После импорта запустить distribute_{images,stickers,videos}.py — разложить файлы по сценам через subject-маркеры">
+          <input id="auto-distribute" type="checkbox" checked />
+          авто-разложить по сценам
         </label>
       </div>
     </header>

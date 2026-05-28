@@ -1,9 +1,13 @@
-// Sidebar расширения. Показывает список промптов выбранного сценария,
-// позволяет скопировать любой по кнопке Copy и автоматически кладёт
-// следующий в буфер, когда пользователь нажимает Generate в Flow.
+// Sidebar расширения. Показывает список промптов выбранного сценария.
+// Клик по Copy кладёт промпт в буфер обмена и сдвигает выделение на
+// следующую сцену. Скачивания из Flow ловит через chrome.downloads и
+// импортирует в content/<миф>/ через webapp.
 //
-// Также принимает от background сообщение flow_download_ready, когда Flow
-// вручную скачивает проект, и импортирует файл в images/ или video/.
+// ВАЖНО: расширение НЕ внедряется на страницу Flow и НЕ слушает её
+// события. Никакой автоматизации DOM Flow, никакого перехвата Enter
+// или клика по «Generate» / «Download Project» — только буфер обмена
+// и chrome.downloads. Flow считает чтение DOM роботом и за это наказывает,
+// поэтому не лезем на его страницу вообще.
 
 const WEBAPP = "http://127.0.0.1:5000";
 const $ = (id) => document.getElementById(id);
@@ -11,13 +15,16 @@ const $ = (id) => document.getElementById(id);
 const state = {
   scenario: "",
   kind: "images",
+  generator: "flow",
   prompts: [],
   currentIdx: -1,
+  lastCopiedIdx: -1,   // последняя сцена, на которую нажали Copy — фоллбэк для Grok
+  tabSceneMap: {},     // tabId → { sceneNum, idx } — для параллельных Grok-вкладок
   doneIdx: new Set(),
-  autocopy: true,
   downloadImages: true,
   downloadStickers: true,
   downloadVideos: true,
+  autoDistribute: true,
   seenDownloadIds: new Set(),
   seenDownloadKeys: new Set(),
   importedDownloadKeys: new Set(),
@@ -29,6 +36,8 @@ const FLOW_HOST_MARKERS = [
   "storage.googleapis.com",
   "flow",
 ];
+
+const GROK_HOST_MARKERS = ["grok.com", "x.ai"];
 
 const FLOW_DOWNLOAD_EXTS = [
   ".zip",
@@ -77,24 +86,26 @@ async function loadScenarios() {
     sel.appendChild(opt);
   }
 
-  // Восстановим прошлый выбор из storage.local
+  // Восстановим прошлый выбор из storage.local.
   chrome.storage.local.get(
     [
       "scenario",
       "kind",
-      "autocopy",
+      "generator",
       "downloadImages",
       "downloadStickers",
       "downloadVideos",
+      "autoDistribute",
     ],
     (saved) => {
+      if (saved.generator) {
+        $("generator-select").value = saved.generator;
+        state.generator = saved.generator;
+        updateTogglesForGenerator();
+      }
       if (saved.kind) {
         $("kind-select").value = saved.kind;
         state.kind = saved.kind;
-      }
-      if (saved.autocopy === false) {
-        $("autocopy").checked = false;
-        state.autocopy = false;
       }
       if (saved.downloadImages === false) {
         $("download-images").checked = false;
@@ -107,6 +118,10 @@ async function loadScenarios() {
       if (saved.downloadVideos === false) {
         $("download-videos").checked = false;
         state.downloadVideos = false;
+      }
+      if (saved.autoDistribute === false) {
+        $("auto-distribute").checked = false;
+        state.autoDistribute = false;
       }
       if (saved.scenario) {
         sel.value = saved.scenario;
@@ -145,28 +160,23 @@ async function loadPrompts() {
   }
   state.prompts = data.prompts || [];
   state.currentIdx = state.prompts.length > 0 ? 0 : -1;
+  state.lastCopiedIdx = -1;
+  state.tabSceneMap = {};
   state.doneIdx = new Set();
   renderPrompts();
   log(`загружено ${state.prompts.length} промптов из ${state.kind}.md`, "ok");
-  if (state.autocopy && state.prompts.length > 0) {
-    copyToClipboard(state.prompts[0].prompt, 0, /*silent*/ true);
-  }
 }
+
+// ─── Импорт скачанного файла ────────────────────────────────────────────────
 
 function basename(path) {
   return String(path || "").split(/[\\/]/).pop() || String(path || "");
 }
 
 function currentDownloadTarget() {
-  if (state.kind === "video") {
-    return state.downloadVideos ? "video" : "";
-  }
-  if (state.kind === "images") {
-    return state.downloadImages ? "images" : "";
-  }
-  if (state.kind === "stickers") {
-    return state.downloadStickers ? "stickers" : "";
-  }
+  if (state.kind === "video") return state.downloadVideos ? "video" : "";
+  if (state.kind === "images") return state.downloadImages ? "images" : "";
+  if (state.kind === "stickers") return state.downloadStickers ? "stickers" : "";
   return "";
 }
 
@@ -189,6 +199,14 @@ function looksLikeFlowDownloadItem(item) {
   if (!FLOW_DOWNLOAD_EXTS.includes(ext)) return false;
   if (FLOW_HOST_MARKERS.some((marker) => url.includes(marker))) return true;
   return /^download(?: \(\d+\))?\.(zip|mp4|mov|webm|m4v|jpg|jpeg|png|webp)$/.test(name);
+}
+
+function looksLikeGrokDownloadItem(item) {
+  const name = basename(item?.filename || "").toLowerCase();
+  const ext = getExt(name);
+  // В Grok-режиме принимаем любой медиафайл с нужным расширением —
+  // URL Grok непредсказуем (CDN), фильтровать по хосту ненадёжно.
+  return [".mp4", ".mov", ".webm", ".m4v", ".jpg", ".jpeg", ".png", ".webp"].includes(ext);
 }
 
 function targetAcceptsItem(target, item) {
@@ -227,7 +245,7 @@ function handleFlowDownload(msg, fromPending = false) {
   const fileLabel = basename(msg.path || msg.filename || "");
   if (!state.scenario) {
     log(
-      `Flow скачал ${fileLabel}, но сценарий не выбран — импорт пропущен`,
+      `Скачан ${fileLabel}, но сценарий не выбран — импорт пропущен`,
       "warn"
     );
     return;
@@ -266,6 +284,7 @@ function handleFlowDownload(msg, fromPending = false) {
       scenario: state.scenario,
       path: msg.path,
       target,
+      autoDistribute: state.autoDistribute,
     },
     (resp) => {
       if (chrome.runtime.lastError) {
@@ -294,8 +313,127 @@ function handleFlowDownload(msg, fromPending = false) {
       if (Array.isArray(r.files) && r.files.length) {
         log(r.files.slice(0, 4).join(" | "), "ok");
       }
+
+      // Результат distribute_*.py (если webapp его запускал).
+      const dist = r.distribute;
+      if (dist) {
+        const scriptLabel = dist.script || "distribute";
+        if (dist.ok) {
+          // Достаём из stdout последние 1-2 строки — обычно там итоговая
+          // статистика «N matched / M unmatched». Если stdout пустой —
+          // просто сообщаем returncode=0.
+          const tail = (dist.stdout || "")
+            .trim()
+            .split(/\r?\n/)
+            .slice(-3)
+            .join(" · ");
+          log(
+            `distribute OK (${scriptLabel}): ${tail || "returncode=0"}`,
+            "ok"
+          );
+        } else {
+          const errTail =
+            (dist.stderr || "").trim().split(/\r?\n/).pop() ||
+            dist.error ||
+            `returncode=${dist.returncode}`;
+          log(
+            `distribute упал (${scriptLabel}): ${errTail}`,
+            "err"
+          );
+          // Также покажем stdout-хвост: distribute_images.py пишет конфликты
+          // сопоставления в stdout (не stderr).
+          if (dist.stdout) {
+            const stdoutTail = dist.stdout
+              .trim()
+              .split(/\r?\n/)
+              .slice(-3)
+              .join(" · ");
+            if (stdoutTail) log(`distribute stdout: ${stdoutTail}`, "warn");
+          }
+        }
+      }
     }
   );
+}
+
+function updateTogglesForGenerator() {
+  const isGrok = state.generator === "grok";
+  // Авто-разложить не нужен в Grok — там раскладка по текущей сцене автоматическая
+  const autoDistLabel = $("auto-distribute").closest("label");
+  if (autoDistLabel) autoDistLabel.style.display = isGrok ? "none" : "";
+}
+
+async function handleGrokDownload(msg) {
+  const fileLabel = basename(msg.path || msg.filename || "");
+  if (!state.scenario) {
+    log(`Скачан ${fileLabel}, но сценарий не выбран — импорт пропущен`, "warn");
+    return;
+  }
+
+  const target = currentDownloadTarget();
+  if (!target) {
+    let label = "скачать изображения";
+    if (state.kind === "video") label = "скачать видео";
+    else if (state.kind === "stickers") label = "скачать стикеры";
+    log(`${fileLabel}: галка «${label}» выключена — импорт пропущен`, "warn");
+    return;
+  }
+
+  // Ищем сцену: сначала по tabId (для параллельных вкладок), потом lastCopiedIdx.
+  const tabId = msg.tabId;
+  let curIdx = -1;
+  let sceneNum = -1;
+
+  if (tabId != null && tabId >= 0 && state.tabSceneMap[tabId] != null) {
+    ({ sceneNum, idx: curIdx } = state.tabSceneMap[tabId]);
+    delete state.tabSceneMap[tabId];
+  } else if (state.lastCopiedIdx >= 0 && state.lastCopiedIdx < state.prompts.length) {
+    curIdx = state.lastCopiedIdx;
+    sceneNum = state.prompts[curIdx].scene;
+  }
+
+  if (sceneNum < 0) {
+    log(`${fileLabel}: сначала нажми Copy на нужной сцене — куда класть файл неизвестно`, "warn");
+    return;
+  }
+  const importKey = downloadImportKey(msg.path || msg.filename || "", target);
+  if (state.importedDownloadKeys.has(importKey)) {
+    log(`${fileLabel}: duplicate event skipped`, "warn");
+    return;
+  }
+  state.importedDownloadKeys.add(importKey);
+  markDownloadSeen({ id: msg.downloadId ?? msg.id, filename: msg.path || msg.filename });
+
+  const tabLabel = tabId != null && tabId >= 0 ? ` [tab ${tabId}]` : "";
+  log(`Grok${tabLabel} → сцена ${sceneNum} (${targetLabel(target)}) «${state.scenario}»…`, "ok");
+
+  try {
+    const resp = await fetch(`${WEBAPP}/api/extension/import-grok`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        scenario: state.scenario,
+        source_path: msg.path,
+        target,
+        scene_number: sceneNum,
+      }),
+    });
+    const r = await resp.json();
+    if (!r.ok) {
+      state.importedDownloadKeys.delete(importKey);
+      log(`Grok import упал: ${r.error || "?"}`, "err");
+      return;
+    }
+    log(`Grok → сцена ${sceneNum} ✓ ${r.file}`, "ok");
+    // currentIdx уже двинулся при Copy — не двигаем повторно.
+    // Сбрасываем lastCopiedIdx, чтобы следующий случайный download
+    // не лёг в ту же сцену.
+    state.lastCopiedIdx = -1;
+    renderPrompts();
+  } catch (e) {
+    state.importedDownloadKeys.delete(importKey);
+    log(`Grok import: ошибка — ${e.message}`, "err");
+  }
 }
 
 function importObservedDownload(item, source = "downloads") {
@@ -304,18 +442,36 @@ function importObservedDownload(item, source = "downloads") {
 
   const target = currentDownloadTarget();
   if (!target) return;
-  if (!looksLikeFlowDownloadItem(item)) return;
-  if (!targetAcceptsItem(target, item)) return;
 
-  markDownloadSeen(item);
-  handleFlowDownload(
-    {
+  if (state.generator === "grok") {
+    if (!looksLikeGrokDownloadItem(item)) return;
+    if (!targetAcceptsItem(target, item)) return;
+    markDownloadSeen(item);
+    handleGrokDownload({
       path: item.filename,
       filename: basename(item.filename),
       url: item.finalUrl || item.url || "",
-    },
-    source === "pending"
-  );
+      tabId: item.tabId,
+    });
+  } else {
+    if (!looksLikeFlowDownloadItem(item)) return;
+    if (!targetAcceptsItem(target, item)) return;
+    markDownloadSeen(item);
+    handleFlowDownload(
+      {
+        path: item.filename,
+        filename: basename(item.filename),
+        url: item.finalUrl || item.url || "",
+      },
+      source === "pending"
+    );
+  }
+}
+
+function looksLikeRelevantDownload(item) {
+  return state.generator === "grok"
+    ? looksLikeGrokDownloadItem(item)
+    : looksLikeFlowDownloadItem(item);
 }
 
 function attachDownloadsWatch() {
@@ -323,7 +479,7 @@ function attachDownloadsWatch() {
 
   chrome.downloads.onCreated.addListener((item) => {
     if (!item || !item.filename) return;
-    if (!looksLikeFlowDownloadItem(item)) return;
+    if (!looksLikeRelevantDownload(item)) return;
     log(`downloads: замечен файл ${basename(item.filename)}`, "ok");
   });
 
@@ -333,7 +489,7 @@ function attachDownloadsWatch() {
     chrome.downloads.search({ id: delta.id }, (items) => {
       const item = items && items[0];
       if (!item || !item.filename) return;
-      if (!looksLikeFlowDownloadItem(item)) return;
+      if (!looksLikeRelevantDownload(item)) return;
       log(`downloads: завершён ${basename(item.filename)}`, "ok");
       importObservedDownload(item, "downloads");
     });
@@ -399,7 +555,7 @@ function renderPrompts() {
   root.querySelectorAll(".copy-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       const idx = parseInt(btn.dataset.idx, 10);
-      copyToClipboard(state.prompts[idx].prompt, idx);
+      copyAndAdvance(idx);
       btn.classList.add("copied");
       setTimeout(() => btn.classList.remove("copied"), 700);
     });
@@ -437,109 +593,88 @@ function escapeAttr(s) {
 
 // ─── Буфер обмена и навигация ─────────────────────────────────────────────
 
-async function copyToClipboard(text, idx, silent = false) {
+// Копирует промпт сцены idx в буфер, помечает её как done и сдвигает
+// выделение на следующую сцену (или сбрасывает в -1, если это была
+// последняя). Без авто-копирования следующего промпта — пользователь
+// сам жмёт Copy на следующей карточке.
+//
+// Клик по Copy — это пользовательский жест в фокусе side panel, поэтому
+// navigator.clipboard.writeText работает напрямую. Прокси через content
+// script (как было раньше) не нужен.
+async function copyAndAdvance(idx) {
+  if (idx < 0 || idx >= state.prompts.length) return;
+  const text = state.prompts[idx].prompt;
   if (!text) return;
 
-  // Side panel НЕ имеет document focus, когда пользователь работает в Flow,
-  // поэтому navigator.clipboard.writeText прямо отсюда обычно падает с
-  // NotAllowedError ("Document is not focused"). Fix: попросить content script
-  // на активной Flow-вкладке записать буфер — у неё фокус есть. Fallback на
-  // navigator.clipboard остаётся для случаев, когда side panel сам сфокусирован
-  // (ручной клик по Copy в карточке) или Flow-вкладки нет вовсе.
-  let success = false;
-  let lastError = null;
-  let route = null;
-
-  // ── Strategy 1: запись через content script сфокусированной Flow-вкладки.
   try {
-    const activeTabs = await chrome.tabs.query({
-      active: true,
-      currentWindow: true,
-    });
-    const flowTab = (activeTabs || []).find((t) =>
-      /^https:\/\/labs\.google/.test(t?.url || "")
-    );
-    if (flowTab && flowTab.id != null) {
-      const resp = await chrome.tabs
-        .sendMessage(flowTab.id, { type: "clipboard_write", text })
-        .catch((e) => ({ ok: false, error: e?.message || String(e) }));
-      if (resp && resp.ok) {
-        success = true;
-        route = "content";
-      } else {
-        lastError = resp?.error || "no response from Flow tab content script";
-      }
-    } else {
-      lastError = "active tab is not labs.google";
-    }
+    await navigator.clipboard.writeText(text);
   } catch (e) {
-    lastError = e?.message || String(e);
-  }
-
-  // ── Strategy 2: fallback в navigator.clipboard самого side panel.
-  // Работает только если side panel сейчас сфокусирован (ручной Copy).
-  if (!success) {
-    try {
-      await navigator.clipboard.writeText(text);
-      success = true;
-      route = "sidepanel";
-    } catch (e) {
-      lastError = e?.message || String(e);
-    }
-  }
-
-  if (!success) {
-    log(`не удалось скопировать: ${lastError}`, "err");
+    log(`не удалось скопировать: ${e?.message || e}`, "err");
     return;
   }
 
-  if (typeof idx === "number") state.currentIdx = idx;
-  if (!silent) {
-    const sceneNum = state.prompts[state.currentIdx]?.scene;
+  state.doneIdx.add(idx);
+  state.lastCopiedIdx = idx;
+  state.currentIdx = idx + 1 < state.prompts.length ? idx + 1 : -1;
+
+  // В Grok-режиме запоминаем активную вкладку → эта вкладка генерирует сцену idx.
+  // Позволяет вести несколько Grok-вкладок параллельно — каждая скачивает в свою сцену.
+  if (state.generator === "grok") {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tabId = tabs?.[0]?.id;
+      if (tabId != null && tabId >= 0) {
+        state.tabSceneMap[tabId] = { sceneNum: state.prompts[idx].scene, idx };
+      }
+    });
+  }
+
+  const sceneNum = state.prompts[idx].scene;
+  if (state.currentIdx === -1) {
     log(
-      `в буфер (${route}): сцена ${sceneNum} (${text.length} симв.)`,
+      `в буфер: сцена ${sceneNum} — последняя (${text.length} симв.). Все промпты прошли.`,
+      "ok"
+    );
+  } else {
+    const nextScene = state.prompts[state.currentIdx].scene;
+    log(
+      `в буфер: сцена ${sceneNum} (${text.length} симв.) → след. ${nextScene}`,
       "ok"
     );
   }
   renderPrompts();
 }
 
-function advance() {
+// Ручной откат на предыдущую сцену. Используется если по ошибке нажал
+// Copy и хочешь вернуться к незавершённой сцене. Если все промпты прошли
+// (currentIdx === -1) — возвращает на последнюю сцену.
+function goBack() {
   if (state.prompts.length === 0) return;
-  if (state.currentIdx >= 0) state.doneIdx.add(state.currentIdx);
-  if (state.currentIdx + 1 < state.prompts.length) {
-    state.currentIdx += 1;
-    renderPrompts();
-    if (state.autocopy) {
-      copyToClipboard(state.prompts[state.currentIdx].prompt, state.currentIdx);
-    } else {
-      log(`следующая сцена ${state.prompts[state.currentIdx].scene}`, "ok");
-    }
+  let targetIdx;
+  if (state.currentIdx === -1) {
+    targetIdx = state.prompts.length - 1;
+  } else if (state.currentIdx === 0) {
+    log("уже на первой сцене, откатить некуда", "warn");
+    return;
   } else {
-    state.currentIdx = -1;
-    renderPrompts();
-    log("Все промпты прошли — можно жать Download Project в Flow.", "ok");
+    targetIdx = state.currentIdx - 1;
   }
+  state.currentIdx = targetIdx;
+  state.doneIdx.delete(targetIdx);
+  renderPrompts();
+  const sceneNum = state.prompts[targetIdx].scene;
+  log(`откат на сцену ${sceneNum}`, "ok");
 }
 
-// ─── Сообщения от background и content ───────────────────────────────────
+// ─── Сообщения от background ──────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.type) return;
-
-  if (msg.type === "generate_clicked") {
-    log("клик Generate в Flow → следующий промпт", "ok");
-    advance();
-    return;
-  }
-
-  if (msg.type === "flow_download_armed") {
-    log(`поймал клик «${msg.label || "Download Project"}» → жду ближайшее скачивание`, "ok");
-    return;
-  }
-
   if (msg.type === "flow_download_ready") {
-    handleFlowDownload(msg, false);
+    if (state.generator === "grok") {
+      handleGrokDownload(msg);
+    } else {
+      handleFlowDownload(msg, false);
+    }
   }
 });
 
@@ -556,6 +691,12 @@ chrome.storage.local.get(["pendingFlowDownload"], (saved) => {
 
 // ─── UI события ────────────────────────────────────────────────────────────
 
+$("generator-select").addEventListener("change", (e) => {
+  state.generator = e.target.value;
+  chrome.storage.local.set({ generator: state.generator });
+  updateTogglesForGenerator();
+});
+
 $("scenario-select").addEventListener("change", (e) => {
   state.scenario = e.target.value;
   chrome.storage.local.set({ scenario: state.scenario });
@@ -567,11 +708,6 @@ $("kind-select").addEventListener("change", (e) => {
   chrome.storage.local.set({ kind: state.kind });
   loadScenarios();
   loadPrompts();
-});
-
-$("autocopy").addEventListener("change", (e) => {
-  state.autocopy = e.target.checked;
-  chrome.storage.local.set({ autocopy: state.autocopy });
 });
 
 $("download-images").addEventListener("change", (e) => {
@@ -589,9 +725,18 @@ $("download-videos").addEventListener("change", (e) => {
   chrome.storage.local.set({ downloadVideos: state.downloadVideos });
 });
 
+$("auto-distribute").addEventListener("change", (e) => {
+  state.autoDistribute = e.target.checked;
+  chrome.storage.local.set({ autoDistribute: state.autoDistribute });
+});
+
 $("reload-btn").addEventListener("click", () => {
   loadScenarios();
   if (state.scenario) loadPrompts();
+});
+
+$("back-btn").addEventListener("click", () => {
+  goBack();
 });
 
 $("clear-log").addEventListener("click", () => {

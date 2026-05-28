@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "TTS EL",
+  "version": "0.1.0",
+  "description": "Помощник для копирования предложений в ElevenLabs и импорта вручную скачанных mp3 в content/<миф>/voiceover/audio/approved_sentences/. С ElevenLabs НЕ взаимодействует.",
+  "permissions": ["sidePanel", "downloads", "storage", "clipboardWrite"],
+  "host_permissions": [
+    "http://127.0.0.1:5000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "TTS EL"
+  }
+}

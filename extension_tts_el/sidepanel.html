@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="sidepanel.css" />
+    <title>TTS EL</title>
+  </head>
+  <body>
+    <header>
+      <div class="title-row">
+        <h1>TTS EL</h1>
+        <div class="title-actions">
+          <button id="back-btn" title="Откатить на предыдущее предложение — если по ошибке нажал Copy и хочешь вернуться к незавершённому">↩</button>
+          <button id="reload-btn" title="Обновить список сценариев">↻</button>
+        </div>
+      </div>
+      <div class="row">
+        <select id="scenario-select">
+          <option value="">— выбери сценарий —</option>
+        </select>
+      </div>
+      <div class="row status">
+        <span id="progress">—</span>
+      </div>
+      <div class="row toggles">
+        <label class="autocopy">
+          <input id="download-audio" type="checkbox" checked />
+          скачать аудио
+        </label>
+      </div>
+    </header>
+    <main id="prompts" class="prompts"></main>
+    <footer>
+      <div class="footer-head">
+        <span>Лог</span>
+        <button id="clear-log" title="Очистить лог">×</button>
+      </div>
+      <div id="log"></div>
+    </footer>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

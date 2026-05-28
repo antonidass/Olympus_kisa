@@ -1,16 +1,19 @@
-// Service worker расширения BOGI Flow Promptr.
+// Service worker расширения BOGI Promptr.
 //
-// Делает три вещи:
-//   1) Открывает sidepanel при клике на иконку (через setPanelBehavior).
+// Делает две вещи:
+//   1) Открывает sidepanel при клике на иконку.
 //   2) Слушает chrome.downloads и ловит скачивания из Google Flow —
-//      когда такой файл докачивается, шлёт sidepanel сообщение flow_download_ready.
-//   3) Принимает от sidepanel запрос import_download и идёт за webapp на
-//      127.0.0.1:5000, чтобы тот импортировал файл в content/<scenario>/images|video.
+//      когда такой файл докачивается, шлёт sidepanel сообщение
+//      flow_download_ready. Sidepanel импортирует файл в content/<миф>/
+//      через webapp.
+//
+// ВАЖНО: на страницу Flow расширение НЕ внедряется. Никакого content
+// script, никаких click/keydown-листенеров на странице Flow. Скачивания
+// определяются исключительно по URL/host в chrome.downloads — Flow
+// считает читание DOM автоматизацией и за это наказывает, поэтому не
+// трогаем его страницу вообще.
 
 const WEBAPP = "http://127.0.0.1:5000";
-const FLOW_DOWNLOAD_ARM_MS = 120_000;
-let expectFlowDownloadUntil = 0;
-const FLOW_DOWNLOAD_ARM_KEY = "flowDownloadArmUntil";
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel
@@ -19,9 +22,8 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 // ─── Перехват скачиваний от Flow ──────────────────────────────────────────
-// Проблема: chrome.downloads.onCreated отдаёт `filename` ещё пустым.
-// Нормальный способ — сначала запомнить id, потом дождаться onChanged со
-// state.complete и взять `filename` через chrome.downloads.search.
+// chrome.downloads.onCreated отдаёт filename ещё пустым. Запоминаем id,
+// дожидаемся onChanged со state.complete и берём filename через search.
 
 const watchedDownloads = new Set();
 const FLOW_MEDIA_EXTS = [
@@ -41,66 +43,37 @@ function hasKnownFlowExt(value) {
   return FLOW_MEDIA_EXTS.some((ext) => low.endsWith(ext) || low.includes(ext));
 }
 
-function armFlowDownload(ms = FLOW_DOWNLOAD_ARM_MS) {
-  expectFlowDownloadUntil = Date.now() + ms;
-  chrome.storage.local.set({ [FLOW_DOWNLOAD_ARM_KEY]: expectFlowDownloadUntil }).catch(() => {});
-}
-
-function isFlowDownloadArmed() {
-  return Date.now() < expectFlowDownloadUntil;
-}
-
-async function getFlowDownloadArmUntil() {
-  if (expectFlowDownloadUntil > Date.now()) return expectFlowDownloadUntil;
-  try {
-    const saved = await chrome.storage.local.get([FLOW_DOWNLOAD_ARM_KEY]);
-    const until = Number(saved?.[FLOW_DOWNLOAD_ARM_KEY] || 0);
-    if (until > Date.now()) {
-      expectFlowDownloadUntil = until;
-      return until;
-    }
-  } catch (_) {}
-  return 0;
-}
-
-async function isFlowDownloadArmedPersistent() {
-  return (await getFlowDownloadArmUntil()) > Date.now();
-}
-
-function clearFlowDownloadArm() {
-  expectFlowDownloadUntil = 0;
-  chrome.storage.local.remove(FLOW_DOWNLOAD_ARM_KEY).catch(() => {});
-}
-
 function looksLikeFlowDownload(item) {
   const url = (item.finalUrl || item.url || "").toLowerCase();
   const fname = (item.filename || "").toLowerCase();
   if (!hasKnownFlowExt(fname) && !hasKnownFlowExt(url)) return false;
   // Flow складывает архивы в storage.googleapis.com / aisandbox / labs.google.
+  // Grok отдаёт файлы через grok.com / x.ai.
   return (
     url.includes("labs.google") ||
     url.includes("aisandbox") ||
     url.includes("storage.googleapis.com") ||
-    url.includes("flow")
+    url.includes("flow") ||
+    url.includes("grok.com") ||
+    url.includes("x.ai")
   );
 }
 
-chrome.downloads.onCreated.addListener(async (item) => {
-  if (looksLikeFlowDownload(item) || await isFlowDownloadArmedPersistent()) {
+chrome.downloads.onCreated.addListener((item) => {
+  if (looksLikeFlowDownload(item)) {
     watchedDownloads.add(item.id);
   }
 });
 
 chrome.downloads.onChanged.addListener(async (delta) => {
-  const armed = await isFlowDownloadArmedPersistent();
-  if (!watchedDownloads.has(delta.id) && !armed) return;
+  if (!watchedDownloads.has(delta.id)) return;
   if (!delta.state || delta.state.current !== "complete") return;
   watchedDownloads.delete(delta.id);
 
   const items = await chrome.downloads.search({ id: delta.id });
   const item = items && items[0];
   if (!item || !item.filename) return;
-  if (!looksLikeFlowDownload(item) && !armed) return;
+  if (!looksLikeFlowDownload(item)) return;
   const payload = {
     type: "flow_download_ready",
     downloadId: item.id,
@@ -110,36 +83,21 @@ chrome.downloads.onChanged.addListener(async (delta) => {
   };
 
   // Шлём sidepanel — он уже знает текущий выбранный сценарий и режим.
-  chrome.runtime
-    .sendMessage(payload)
-    .catch(() => {
-      // Sidepanel может быть закрыт. Сохраняем событие — панель подберёт его
-      // при следующем открытии и сама решит, импортировать ли файл.
-      chrome.storage.local.set({
-        pendingFlowDownload: {
-          ...payload,
-          ts: Date.now(),
-        },
-      });
+  chrome.runtime.sendMessage(payload).catch(() => {
+    // Sidepanel может быть закрыт. Сохраняем событие — панель подберёт его
+    // при следующем открытии и сама решит, импортировать ли файл.
+    chrome.storage.local.set({
+      pendingFlowDownload: {
+        ...payload,
+        ts: Date.now(),
+      },
     });
-
-  // Один ручной клик Download Project должен подхватить одно ближайшее скачивание.
-  clearFlowDownloadArm();
+  });
 });
 
 // ─── Импорт скачанного файла через webapp ─────────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg && msg.type === "flow_download_clicked") {
-    armFlowDownload();
-    chrome.runtime.sendMessage({
-      type: "flow_download_armed",
-      label: msg.label || "download project",
-    }).catch(() => {});
-    sendResponse?.({ ok: true });
-    return false;
-  }
-
   if (msg && msg.type === "import_download") {
     fetch(`${WEBAPP}/api/extension/import-download`, {
       method: "POST",
@@ -148,10 +106,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         scenario: msg.scenario,
         source_path: msg.path,
         target: msg.target,
+        // auto_distribute=true заставляет webapp после распаковки запустить
+        // соответствующий distribute_*.py (images / stickers / videos) и
+        // вернуть его результат в поле `distribute`.
+        auto_distribute: msg.autoDistribute !== false, // default true
       }),
     })
       .then((r) => r.json().then((j) => ({ status: r.status, body: j })))
-      .then(({ status, body }) => sendResponse({ ok: status >= 200 && status < 300, body }))
+      .then(({ status, body }) =>
+        sendResponse({ ok: status >= 200 && status < 300, body })
+      )
       .catch((e) => sendResponse({ ok: false, error: String(e) }));
     return true; // async response
   }

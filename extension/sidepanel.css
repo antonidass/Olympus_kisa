@@ -65,7 +65,25 @@ select { width: 100%; }
 button { cursor: pointer; }
 button:hover { background: #232831; }
 
-#reload-btn { padding: 4px 10px; font-size: 14px; }
+#generator-select {
+  font-weight: 600;
+  font-size: 11px;
+  color: #888;
+  border-color: #232831;
+}
+#generator-select option[value="grok"] { color: #8fb0ff; }
+/* Когда выбран Grok — выделяем синим */
+#generator-select:has(option[value="grok"]:checked) {
+  border-color: #4a6fa5;
+  color: #8fb0ff;
+}
+
+.title-actions {
+  display: flex;
+  gap: 4px;
+}
+#reload-btn,
+#back-btn { padding: 4px 10px; font-size: 14px; }
 
 .autocopy {
   display: flex;
